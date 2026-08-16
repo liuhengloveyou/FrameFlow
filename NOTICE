@@ -1,0 +1,47 @@
+FrameFlow (巡帧)
+Copyright (c) 2026 liuhengloveyou
+
+This product includes software developed by third parties.
+
+---------------------------------------------------------------------------
+go2rtc
+---------------------------------------------------------------------------
+
+FrameFlow is derived in part from go2rtc by AlexxIT:
+
+  https://github.com/AlexxIT/go2rtc
+
+go2rtc is licensed under the MIT License. Copyright (c) AlexxIT and contributors.
+See the upstream repository for the full license text and contributor list.
+
+---------------------------------------------------------------------------
+FFmpeg
+---------------------------------------------------------------------------
+
+Optional native decoding / packaging may use prebuilt FFmpeg shared libraries
+fetched via scripts/fetch-ffmpeg-linux.sh (for example from BtbN/FFmpeg-Builds).
+
+Those builds may be GPL-licensed (e.g. *-gpl-shared). If you distribute a
+binary that links against or bundles GPL FFmpeg libraries, that distribution
+must comply with the applicable FFmpeg / GPL license terms.
+
+Prefer system FFmpeg or LGPL builds when you need a non-GPL redistribution
+story. FrameFlow source itself is MIT; bundling GPL libraries affects the
+combined binary release, not the license of this repository's source tree.
+
+---------------------------------------------------------------------------
+ONNX Runtime
+---------------------------------------------------------------------------
+
+YOLO / vision inference optionally loads Microsoft ONNX Runtime shared
+libraries (scripts/fetch-onnxruntime-*.sh). ONNX Runtime is licensed under
+the MIT License. See:
+
+  https://github.com/microsoft/onnxruntime
+
+---------------------------------------------------------------------------
+Other Go module dependencies
+---------------------------------------------------------------------------
+
+Third-party Go modules listed in go.mod / go.sum retain their respective
+licenses. Review those projects when redistributing.

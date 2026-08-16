@@ -1,0 +1,35 @@
+#!/bin/bash
+# 安装完成后：写入默认配置、准备数据目录
+
+set -u
+
+BIN_DIR="${TRIM_APPDEST}/server"
+
+mkdir -p "${TRIM_PKGETC}" \
+         "${TRIM_PKGVAR}/data/models" \
+         "${TRIM_PKGVAR}/data/alarm-evidence" \
+         "${TRIM_PKGVAR}/logs"
+
+install_default() {
+    local dest=$1
+    local src=$2
+    if [ ! -f "${dest}" ] && [ -f "${src}" ]; then
+        cp -f "${src}" "${dest}"
+    fi
+}
+
+install_default "${TRIM_PKGETC}/frameflow.yaml" "${BIN_DIR}/frameflow.yaml"
+install_default "${TRIM_PKGETC}/passport.conf.yaml" "${BIN_DIR}/passport.conf.yaml"
+install_default "${TRIM_PKGETC}/rbac_with_domains_model.conf" "${BIN_DIR}/rbac_with_domains_model.conf"
+
+# passport 从工作目录读 rbac 模型
+if [ -f "${TRIM_PKGETC}/rbac_with_domains_model.conf" ]; then
+    ln -sfn "${TRIM_PKGETC}/rbac_with_domains_model.conf" \
+        "${TRIM_PKGVAR}/rbac_with_domains_model.conf"
+fi
+
+if [ -f "${BIN_DIR}/FrameFlow" ]; then
+    chmod +x "${BIN_DIR}/FrameFlow" || true
+fi
+
+exit 0

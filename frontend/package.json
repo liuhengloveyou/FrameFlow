@@ -1,0 +1,42 @@
+{
+  "name": "frameflow-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "astryx": "node node_modules/@astryxdesign/cli/bin/astryx.mjs"
+  },
+  "dependencies": {
+    "@astryxdesign/cli": "^0.1.7",
+    "@astryxdesign/core": "^0.1.7",
+    "@astryxdesign/theme-neutral": "^0.1.7",
+    "@heroicons/react": "^2.2.0",
+    "@hookform/resolvers": "^5.4.0",
+    "@tanstack/react-query": "^5.101.2",
+    "@tanstack/react-router": "^1.170.18",
+    "@tanstack/react-table": "^8.21.3",
+    "@xyflow/react": "^12.11.2",
+    "axios": "^1.18.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-hook-form": "^7.82.0",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tanstack/react-query-devtools": "^5.101.2",
+    "@tanstack/react-router-devtools": "^1.167.0",
+    "@tanstack/router-plugin": "^1.168.23",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxlint": "^1.74.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.1.5"
+  }
+}

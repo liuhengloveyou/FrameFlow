@@ -1,0 +1,23 @@
+package xiaomi
+
+import (
+	"strings"
+
+	"github.com/liuhengloveyou/FrameFlow/pkg/core"
+	"github.com/liuhengloveyou/FrameFlow/pkg/xiaomi/legacy"
+	"github.com/liuhengloveyou/FrameFlow/pkg/xiaomi/miss"
+)
+
+func Dial(rawURL string) (core.Producer, error) {
+	// Format: xiaomi/miss
+	if strings.Contains(rawURL, "vendor") {
+		return miss.Dial(rawURL)
+	}
+
+	// Format: xiaomi/legacy
+	return legacy.Dial(rawURL)
+}
+
+func IsLegacy(model string) bool {
+	return legacy.Supported(model)
+}

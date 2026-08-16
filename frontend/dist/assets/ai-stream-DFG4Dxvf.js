@@ -1,0 +1,1 @@
+import{n as e}from"./preview-source-CXCZegaU.js";function t(t,n){let r=n?.trim();if(r)return r;let i=t.channels?.find(e=>e.isDefault)??t.channels?.[0];return i?e(i):t.channel?.trim()?t.channel.trim():String(t.id)}export{t};

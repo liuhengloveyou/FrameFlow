@@ -1,0 +1,14 @@
+log_dir: "./logs"
+log_level: "info"
+
+db_driver: "sqlite3"
+db_dsn: "./data/passport.db"
+
+root_user_id: 10000
+root_tenant_id: 10000
+
+domain: ""
+# 生产环境务必更换为随机长字符串
+session_key: "frameflow-sess-change-me"
+session_store_type: "cookie"
+session_expire: 259200

@@ -1,0 +1,6 @@
+allowBuilds:
+  msw: set this to true or false
+minimumReleaseAgeExclude:
+  - '@astryxdesign/cli@0.1.7'
+  - '@astryxdesign/core@0.1.7'
+  - '@astryxdesign/theme-neutral@0.1.7'

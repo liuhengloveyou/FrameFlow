@@ -1,0 +1,50 @@
+# FrameFlow fnOS 默认配置（安装后复制到 $TRIM_PKGETC/frameflow.yaml）
+# 工作目录为 $TRIM_PKGVAR，相对路径均落在应用数据目录。
+
+log:
+  level: info
+  output: stdout
+  time: UNIXMS
+
+api:
+  listen: ":27788"
+
+rtsp:
+  listen: ":8554"
+  default_query: "video&audio"
+
+rtmp:
+  listen: ":1935"
+
+webrtc:
+  listen: ":8555"
+
+database:
+  driver: sqlite3
+  dsn: "data/frameflow.db"
+
+gb28181:
+  listen: ":5060"
+  serial: "34020000001310000001"
+  realm: "3402000000"
+  password: ""
+  sip_ip: ""
+  media_ip: ""
+  media_port: "10000-20000"
+  transport: "udp"
+  allow_unknown: false
+
+vision:
+  models_dir: data/models
+  model: ""
+  labels: ""
+  # 相对 TRIM_PKGVAR；飞牛包启动脚本会设 ONNXRUNTIME_SHARED_LIBRARY_PATH，通常可留空
+  ort_lib: ""
+  conf: 0.25
+  input_size: 320
+  nms_iou: 0.45
+  max_det: 100
+  poll_ms: 120
+  pull_mode: interval
+  pull_sample_ms: 200
+  pull_max_gop_mb: 8

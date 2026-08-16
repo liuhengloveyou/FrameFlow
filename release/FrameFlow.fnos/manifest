@@ -1,0 +1,17 @@
+appname               = FrameFlow
+version               = 1.0.0
+display_name          = 巡帧
+desc                  = 流媒体与 AI 视频平台：实时监控、录像回放、事件核查与告警联动。
+platform              = x86
+source                = thirdparty
+maintainer            = FrameFlow
+maintainer_url        = https://github.com/liuhengloveyou/FrameFlow
+distributor           = FrameFlow
+distributor_url       = https://github.com/liuhengloveyou/FrameFlow
+os_min_version        = 0.9.27
+desktop_uidir         = ui
+desktop_applaunchname = FrameFlow.Application
+service_port          = 27788
+checkport             = true
+ctl_stop              = true
+disable_authorization_path = false
