@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a bug in FrameFlow
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for a report. Please desensitize logs (passwords, tokens, internal IPs).
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happened vs what you expected?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps
+      placeholder: |
+        1. Start with …
+        2. Open …
+        3. See error …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `./frameflow -v` or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / Arch
+      placeholder: e.g. Ubuntu 24.04 amd64, macOS arm64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Optional, redact secrets
+      render: shell

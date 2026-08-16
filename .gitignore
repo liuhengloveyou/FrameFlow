@@ -1,0 +1,70 @@
+.idea/
+.tmp/
+.vscode/
+.pnpm-store/
+
+# 仅忽略仓库根目录产物，勿匹配 fnos/FrameFlow/
+/FrameFlow
+/frameflow
+/frameflow.exe
+/frameflow.yaml
+/frameflow.json
+fnos/FrameFlow/app/server/FrameFlow
+fnos/FrameFlow/app/server/lib/
+
+# 历史/上游本地配置名，仍忽略以免误提交
+go2rtc.yaml
+go2rtc.json
+go2rtc_freebsd*
+go2rtc_linux*
+go2rtc_mac*
+go2rtc_win*
+/go2rtc
+/go2rtc.exe
+
+0_test.go
+
+.DS_Store
+
+website/.vitepress/cache
+website/.vitepress/dist
+
+node_modules
+package-lock.json
+CLAUDE.md
+
+# 前端依赖与本地 env（dist 需保留以便 go:embed）
+frontend/node_modules
+frontend/.env
+frontend/.env.local
+frontend/.env.development
+frontend/.env.*.local
+
+# 运行时日志
+/logs/
+*.log
+
+# 产品文档与对照源码（不进入开源仓库）
+/docs/
+/参考/
+
+# 运行时数据：数据库、模型、数据集、报警证据
+/data/
+
+# 预编译原生库（通过 scripts/fetch-*.sh 获取）
+/lib/libonnxruntime*
+/lib/libavcodec*
+/lib/libavformat*
+/lib/libavutil*
+/lib/libswresample*
+/lib/libswscale*
+/lib/ffmpeg/**/lib/
+/lib/onnxruntime/**/*.so
+/lib/onnxruntime/**/*.so.*
+/lib/onnxruntime/**/*.dylib
+
+# 仓库内配置模板（可提交）
+# configs/frameflow.yaml、passport.conf.yaml、rbac…
+
+# 站点私有 nginx 等（含域名/证书路径）
+/configs/frameflow.conf
