@@ -798,7 +798,7 @@ function TaskDetailPanel({
           </MetadataListItem>
           <MetadataListItem label="Assignee">
             <HStack gap={2} vAlign="center">
-              <Avatar name={task.assignee} size="xsmall" />
+              <Avatar name={task.assignee} size="sm" />
               <Text type="body">{task.assignee}</Text>
             </HStack>
           </MetadataListItem>
@@ -886,8 +886,8 @@ export default function DataTableTemplate() {
 
   const detailPanel = useResizable({
     defaultSize: 360,
-    minSizePx: 280,
-    maxSizePx: 500,
+    minSize: 280,
+    maxSize: 500,
   });
 
   const COL_COUNT = columns.length;
@@ -1066,7 +1066,7 @@ export default function DataTableTemplate() {
                             </Text>
                           </TableCell>
                           <TableCell>
-                            <Avatar name={task.assignee} size="xsmall" />
+                            <Avatar name={task.assignee} size="sm" />
                           </TableCell>
                           <TableCell>
                             <DropdownMenu

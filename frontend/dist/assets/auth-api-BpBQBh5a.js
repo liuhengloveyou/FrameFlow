@@ -1,1 +1,0 @@
-import{t as e}from"./account-api-DDXLdjiV.js";async function t(t,n){return{user:await e.login(t.trim(),n)}}async function n(){try{await e.logout()}catch{}}export{n,t};

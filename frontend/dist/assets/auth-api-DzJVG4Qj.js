@@ -1,0 +1,1 @@
+import{i as e}from"./index-4JUftChx.js";var t=`frameflow-sess`;async function n(t,n){return{user:await e.login(t.trim(),n)}}async function r(){try{await e.logout()}catch{}i()}function i(){if(typeof document>`u`)return;let e=`${t}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/`;document.cookie=e,document.cookie=`${e}; SameSite=Lax`}export{r as n,n as t};

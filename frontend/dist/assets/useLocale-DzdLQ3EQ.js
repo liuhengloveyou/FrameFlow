@@ -1,0 +1,1 @@
+import{a as e,n as t}from"./jsx-runtime-D3jfb0Ew.js";import{_ as n}from"./index-4JUftChx.js";var r=e(t(),1);function i(){return(0,r.use)(n).locale}export{i as t};
