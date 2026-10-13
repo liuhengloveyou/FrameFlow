@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/liuhengloveyou/FrameFlow/frontend"
-	"github.com/liuhengloveyou/FrameFlow/www"
 )
 
 func initStatic(staticDir string) {
@@ -26,13 +25,17 @@ func initStatic(staticDir string) {
 		sub, err := fs.Sub(frontend.Dist, "dist")
 		if err != nil {
 			log.Error().Err(err).Msg("[api] frontend dist subfs")
-			root = http.FS(www.Static)
 		} else {
 			root = http.FS(sub)
 			spaIndex, _ = fs.ReadFile(sub, "index.html")
 		}
-	} else {
-		root = http.FS(www.Static)
+	}
+
+	// 既无 static_dir、也没有可用的嵌入 dist 时不注册静态路由：
+	// 未匹配的路径交由 ServeMux 返回 404，避免注册一个必失败的文件服务。
+	if root == nil {
+		log.Warn().Msg("[api] no frontend assets (static_dir unset & embedded dist unavailable); static routes disabled")
+		return
 	}
 
 	base := len(basePath)

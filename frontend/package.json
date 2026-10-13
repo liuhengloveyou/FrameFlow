@@ -11,32 +11,32 @@
     "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "dependencies": {
-    "@astryxdesign/cli": "^0.6.5",
-    "@astryxdesign/core": "^0.6.5",
-    "@astryxdesign/theme-neutral": "^0.6.5",
+    "@astryxdesign/cli": "^0.7.0",
+    "@astryxdesign/core": "^0.7.0",
+    "@astryxdesign/theme-neutral": "^0.7.0",
     "@heroicons/react": "^2.2.0",
     "@hookform/resolvers": "^5.9.1",
-    "@tanstack/react-query": "^5.104.1",
-    "@tanstack/react-router": "^1.170.41",
-    "@tanstack/react-table": "^9.2.4",
+    "@tanstack/react-query": "^5.104.2",
+    "@tanstack/react-router": "^1.170.44",
+    "@tanstack/react-table": "^9.3.1",
     "@xyflow/react": "^12.12.0",
     "axios": "^1.20.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-hook-form": "^7.89.0",
-    "zod": "^4.6.5",
+    "react-hook-form": "^7.90.0",
+    "zod": "^4.6.7",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@tanstack/react-query-devtools": "^5.104.1",
+    "@tanstack/react-query-devtools": "^5.104.2",
     "@tanstack/react-router-devtools": "^1.167.2",
-    "@tanstack/router-plugin": "^1.168.42",
-    "@types/node": "^26.6.4",
+    "@tanstack/router-plugin": "^1.168.45",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "oxlint": "^1.86.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxlint": "^1.87.0",
     "typescript": "~7.0.2",
-    "vite": "^8.3.2"
+    "vite": "^8.3.4"
   }
 }
