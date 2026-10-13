@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { HStack } from '@astryxdesign/core/HStack'
 import { Text } from '@astryxdesign/core/Text'
+import { ToneBadge } from '@/components/tone-badge'
+import { ReviewStatusBadge } from '@/components/event-badges'
 import { listReviewContext } from '@/apis/review-api'
 import type { ReviewEvent, ReviewEventKind } from '@/types/api'
 import { formatAbsoluteShort, formatRelativeTime } from './review-time'
@@ -106,11 +107,8 @@ export function ReviewDetail({
           <div className="ff-review-detail-header-main">
             <div className="ff-review-detail-title-row">
               <h2 className="ff-review-detail-title">{event.title}</h2>
-              <Badge label={KIND_LABEL[event.kind]} variant="neutral" />
-              <Badge
-                label={reviewed ? '已核查' : '待核查'}
-                variant={reviewed ? 'success' : 'warning'}
-              />
+              <ToneBadge tone="off">{KIND_LABEL[event.kind]}</ToneBadge>
+              <ReviewStatusBadge status={reviewed ? 'reviewed' : 'unreviewed'} />
             </div>
             <p className="ff-review-detail-meta">{metaLine}</p>
           </div>

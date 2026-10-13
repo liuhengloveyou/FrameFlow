@@ -6,6 +6,12 @@ import (
 	"image/jpeg"
 )
 
+// EncodeJPEG 把 packed RGB888 编码为 JPEG。仅告警证据落库这类低频路径调用
+// （1080p 约 50ms），不要放进逐帧检测热路径。
+func EncodeJPEG(rgb []byte, w, h int) ([]byte, error) {
+	return rgbToJPEG(rgb, w, h)
+}
+
 // rgbToJPEG 将 packed RGB 转为 JPEG（告警抓拍用）。
 func rgbToJPEG(rgb []byte, w, h int) ([]byte, error) {
 	if w <= 0 || h <= 0 || len(rgb) < w*h*3 {

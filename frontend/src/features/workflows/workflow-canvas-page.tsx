@@ -410,7 +410,7 @@ export function WorkflowCanvasPage() {
   return (
     <PageLayout
         title={name || '工作流画布'}
-        description="顶栏拖入节点 · 连线编排 · 调试"
+        badge="画布编排"
         contentPadding={3}
         actions={
           <HStack gap={2} vAlign="center" className="ff-workflow-header-actions">

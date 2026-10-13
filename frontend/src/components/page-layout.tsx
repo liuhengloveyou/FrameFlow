@@ -9,25 +9,29 @@ import { PageHeader } from '@/components/page-header'
 
 export function PageLayout({
   title,
+  badge,
   actions,
-  logo,
   toolbar,
   children,
   contentPadding = 4,
-  headerHeight = 48,
-  end,
+  headerHeight = 52,
 }: {
   title: string
-  /** @deprecated 页头不再展示描述，保留以免调用方报错 */
-  description?: string
+  /** 标题旁场景徽标，如「全部设备」 */
+  badge?: string
+  /** 页面级动作（放在全局搜索左侧） */
   actions?: ReactNode
-  logo?: ReactNode
   /** 页头下方的筛选/工具条，落在内容区顶部 */
   toolbar?: ReactNode
   children?: ReactNode
   contentPadding?: SpacingStep
-  /** 顶栏高度（含右侧 sm 按钮，略高于默认以免裁切） */
+  /** 顶栏高度 */
   headerHeight?: number
+  /** @deprecated 页头不再展示描述，保留以免调用方报错 */
+  description?: string
+  /** @deprecated 保留兼容 */
+  logo?: ReactNode
+  /** @deprecated 保留兼容 */
   end?: ReactNode
 }) {
   return (
@@ -42,10 +46,9 @@ export function PageLayout({
           label={title}
           className="ff-page-header"
         >
-          <PageHeader title={title} actions={actions} logo={logo} />
+          <PageHeader title={title} actions={actions} badge={badge} />
         </LayoutHeader>
       }
-      end={end}
       content={
         <LayoutContent padding={contentPadding} className="ff-page-content">
           <div className="ff-page-body">

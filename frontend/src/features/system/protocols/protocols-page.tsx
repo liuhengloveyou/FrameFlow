@@ -32,6 +32,7 @@ export function ProtocolsPage() {
   return (
     <PageLayout
       title="协议配置"
+      badge="收流与发现"
       toolbar={
         <TabList
           value={active}

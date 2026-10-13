@@ -37,11 +37,20 @@ func newDecoderImpl(codec Codec, opt Options) (decoderImpl, error) {
 	if maxw < 0 {
 		maxw = 0
 	}
+	stream := opt.Streaming
 	switch codec {
 	case CodecH264:
-		p = C.ffdecode_open_h264_maxw(maxw)
+		if stream {
+			p = C.ffdecode_open_h264_stream(maxw)
+		} else {
+			p = C.ffdecode_open_h264_maxw(maxw)
+		}
 	case CodecH265:
-		p = C.ffdecode_open_hevc_maxw(maxw)
+		if stream {
+			p = C.ffdecode_open_hevc_stream(maxw)
+		} else {
+			p = C.ffdecode_open_hevc_maxw(maxw)
+		}
 	default:
 		return nil, fmt.Errorf("ffdecode: unknown codec %v", codec)
 	}
@@ -72,8 +81,39 @@ func (d *cgoDecoder) decode(data []byte) (*Frame, error) {
 	if ret < 0 {
 		return nil, fmt.Errorf("ffdecode: libavcodec error %d", int(ret))
 	}
-	// C API: 0 = got frame, 1 = need more input (no frame yet).
-	if ret != 0 || out == nil || w <= 0 || h <= 0 {
+	return frameFromC(out, w, h, ret == 0)
+}
+
+func (d *cgoDecoder) decodeStream(data []byte, wantFrame bool) (*Frame, error) {
+	if d.p == nil {
+		return nil, errors.New("ffdecode: decoder closed")
+	}
+	if len(data) == 0 {
+		return nil, ErrNoFrame
+	}
+	var out *C.uint8_t
+	var w, h C.int
+	want := C.int(0)
+	if wantFrame {
+		want = 1
+	}
+	base := (*C.uint8_t)(unsafe.Pointer(&data[0]))
+	ret := C.ffdecode_feed_stream(d.p, base, C.size_t(len(data)), want, &out, &w, &h)
+	if ret < 0 {
+		return nil, fmt.Errorf("ffdecode: libavcodec error %d", int(ret))
+	}
+	if !wantFrame {
+		if out != nil {
+			C.av_free(unsafe.Pointer(out))
+		}
+		return nil, nil
+	}
+	return frameFromC(out, w, h, ret == 0)
+}
+
+// frameFromC 把 C 侧 RGB 缓冲转换为 [Frame] 并释放 C 缓冲；未取到帧时返回 [ErrNoFrame]。
+func frameFromC(out *C.uint8_t, w, h C.int, gotFrame bool) (*Frame, error) {
+	if !gotFrame || out == nil || w <= 0 || h <= 0 {
 		if out != nil {
 			C.av_free(unsafe.Pointer(out))
 		}

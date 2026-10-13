@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@astryxdesign/core/Button'
 import { Card } from '@astryxdesign/core/Card'
-import { Badge } from '@astryxdesign/core/Badge'
 import { FileInput } from '@astryxdesign/core/FileInput'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
@@ -13,8 +12,17 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  CheckCircleIcon,
+  CircleStackIcon,
+  CubeIcon,
+  ShieldCheckIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
 import { SidePanel } from '@/components/side-panel'
+import { ToneBadge, type Tone } from '@/components/tone-badge'
 import { DataTable, proportional, pixel, type DataTableColumn } from '@/components/data-table'
 import { LicenseStatusBadge } from '@/components/status-badge'
 import {
@@ -96,6 +104,12 @@ const UPDATE_STATUS_LABEL: Record<ModelUpdateRecord['status'], string> = {
   running: '进行中',
 }
 
+const UPDATE_STATUS_TONE: Record<ModelUpdateRecord['status'], Tone> = {
+  success: 'ok',
+  failed: 'danger',
+  running: 'warn',
+}
+
 export function ModelsPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
@@ -144,6 +158,16 @@ export function ModelsPage() {
     if (updateStatus) rows = rows.filter((r) => r.status === updateStatus)
     return rows
   }, [updatesQuery.data, updateStatus])
+
+  const counts = useMemo(() => {
+    const list = modelsQuery.data?.items ?? []
+    return {
+      all: list.length,
+      authorized: list.filter((m) => m.licenseStatus === 'authorized').length,
+      ready: list.filter((m) => Boolean(m.localVersion)).length,
+      pending: list.filter((m) => !m.localVersion).length,
+    }
+  }, [modelsQuery.data])
 
   const downloadMutation = useMutation({
     mutationFn: (id: string) => downloadModel(id),
@@ -239,18 +263,76 @@ export function ModelsPage() {
   return (
     <PageLayout
       title="模型仓库"
-      actions={
-        <HStack gap={2} vAlign="center">
-          <Button
-            label="刷新"
-            variant="secondary"
-            size="sm"
-            isLoading={modelsQuery.isFetching}
-            clickAction={async () => {
-              await modelsQuery.refetch()
-              await updatesQuery.refetch()
-            }}
-          />
+      badge={`${counts.ready}/${counts.all || 0} 已就绪`}
+    >
+      <PageToolbar
+        filters={
+          <>
+            <TextInput
+              label="搜索"
+              isLabelHidden
+              placeholder="名称 / 描述 / 标签"
+              value={name}
+              onChange={setName}
+              hasClear
+            />
+            <Selector
+              label="授权状态"
+              isLabelHidden
+              placeholder="全部授权状态"
+              hasClear
+              value={license}
+              onChange={(v) => setLicense(v ?? '')}
+              options={[
+                { label: '已授权', value: 'authorized' },
+                { label: '已到期', value: 'expired' },
+                { label: '已关闭', value: 'disabled' },
+                { label: '不可用', value: 'unavailable' },
+              ] satisfies Array<{ label: string; value: ModelLicenseStatus }>}
+            />
+            <Selector
+              label="格式"
+              isLabelHidden
+              placeholder="全部格式"
+              hasClear
+              value={format}
+              onChange={(v) => setFormat(v ?? '')}
+              options={[
+                { label: 'ONNX', value: 'ONNX' },
+                { label: 'RKNN', value: 'RKNN' },
+                { label: 'TensorRT', value: 'TensorRT' },
+              ]}
+            />
+          </>
+        }
+        stats={
+          <InlineStatGroup>
+            <InlineStat
+              icon={<CubeIcon />}
+              value={counts.all}
+              label="模型总数"
+            />
+            <InlineStat
+              icon={<ShieldCheckIcon />}
+              value={counts.authorized}
+              label="已授权"
+              tone="teal"
+            />
+            <InlineStat
+              icon={<CheckCircleIcon />}
+              value={counts.ready}
+              label="本地就绪"
+              tone="ok"
+            />
+            <InlineStat
+              icon={<CircleStackIcon />}
+              value={counts.pending}
+              label="待校验"
+              tone="warn"
+            />
+          </InlineStatGroup>
+        }
+        actions={
           <Button
             label="接入模型"
             variant="primary"
@@ -265,47 +347,8 @@ export function ModelsPage() {
               setRegisterOpen(true)
             }}
           />
-        </HStack>
-      }
-    >
-
-      <div className="ff-toolbar">
-        <TextInput
-          label="搜索"
-          isLabelHidden
-          placeholder="名称 / 描述 / 标签"
-          value={name}
-          onChange={setName}
-          hasClear
-        />
-        <Selector
-          label="授权状态"
-          isLabelHidden
-          placeholder="全部授权状态"
-          hasClear
-          value={license}
-          onChange={(v) => setLicense(v ?? '')}
-          options={[
-            { label: '已授权', value: 'authorized' },
-            { label: '已到期', value: 'expired' },
-            { label: '已关闭', value: 'disabled' },
-            { label: '不可用', value: 'unavailable' },
-          ] satisfies Array<{ label: string; value: ModelLicenseStatus }>}
-        />
-        <Selector
-          label="格式"
-          isLabelHidden
-          placeholder="全部格式"
-          hasClear
-          value={format}
-          onChange={(v) => setFormat(v ?? '')}
-          options={[
-            { label: 'ONNX', value: 'ONNX' },
-            { label: 'RKNN', value: 'RKNN' },
-            { label: 'TensorRT', value: 'TensorRT' },
-          ]}
-        />
-      </div>
+        }
+      />
 
       <div className="ff-model-grid">
         {filteredModels.map((model) => (
@@ -322,9 +365,11 @@ export function ModelsPage() {
               </div>
               <div className="ff-model-card-badges">
                 <LicenseStatusBadge status={model.licenseStatus} />
-                <Badge label={model.modelStatus} variant="neutral" />
+                <ToneBadge tone="off">{model.modelStatus}</ToneBadge>
                 {model.formats.map((f) => (
-                  <Badge key={f} label={f} variant="teal" />
+                  <ToneBadge key={f} tone="info">
+                    {f}
+                  </ToneBadge>
                 ))}
               </div>
               <div className="ff-model-card-meta">
@@ -345,7 +390,11 @@ export function ModelsPage() {
               </div>
               <div className="ff-model-card-versions">
                 <span>版本 {model.version}</span>
-                <span>{model.localVersion ? '可用' : '未就绪'}</span>
+                {model.localVersion ? (
+                  <ToneBadge tone="ok">可用</ToneBadge>
+                ) : (
+                  <ToneBadge tone="warn">未就绪</ToneBadge>
+                )}
               </div>
               <div className="ff-model-card-actions">
                 <Button
@@ -374,27 +423,31 @@ export function ModelsPage() {
           </Card>
         ))}
       </div>
-      {filteredModels.length === 0 ? <div className="ff-placeholder">无匹配模型</div> : null}
+      {filteredModels.length === 0 ? (
+        <div className="ff-placeholder">
+          {modelsQuery.isLoading ? '加载中…' : '无匹配模型，可点击右上「接入模型」上传权重'}
+        </div>
+      ) : null}
 
       <VStack gap={2}>
-        <HStack justify="between" vAlign="center">
-          <h2 className="ff-page-title" style={{ fontSize: '1.1rem' }}>
-            最近更新记录
-          </h2>
-          <Selector
-            label="更新状态"
-            isLabelHidden
-            placeholder="全部状态"
-            hasClear
-            value={updateStatus}
-            onChange={(v) => setUpdateStatus(v ?? '')}
-            options={[
-              { label: '成功', value: 'success' },
-              { label: '失败', value: 'failed' },
-              { label: '进行中', value: 'running' },
-            ] satisfies Array<{ label: string; value: ModelUpdateRecord['status'] }>}
-          />
-        </HStack>
+        <PageToolbar
+          filters={<span className="ff-section-title">最近更新记录</span>}
+          actions={
+            <Selector
+              label="更新状态"
+              isLabelHidden
+              placeholder="全部状态"
+              hasClear
+              value={updateStatus}
+              onChange={(v) => setUpdateStatus(v ?? '')}
+              options={[
+                { label: '成功', value: 'success' },
+                { label: '失败', value: 'failed' },
+                { label: '进行中', value: 'running' },
+              ] satisfies Array<{ label: string; value: ModelUpdateRecord['status'] }>}
+            />
+          }
+        />
         <div className="ff-table-wrap">
           <DataTable
             data={filteredUpdates}
@@ -404,11 +457,6 @@ export function ModelsPage() {
             emptyLabel="暂无更新记录"
             columns={
               [
-                {
-                  key: 'id',
-                  header: 'ID',
-                  width: pixel(80),
-                },
                 {
                   key: 'modelName',
                   header: '模型名称',
@@ -435,16 +483,9 @@ export function ModelsPage() {
                   header: '状态',
                   width: pixel(96),
                   render: (row) => (
-                    <Badge
-                      label={UPDATE_STATUS_LABEL[row.status]}
-                      variant={
-                        row.status === 'success'
-                          ? 'success'
-                          : row.status === 'failed'
-                            ? 'error'
-                            : 'warning'
-                      }
-                    />
+                    <ToneBadge tone={UPDATE_STATUS_TONE[row.status] ?? 'off'}>
+                      {UPDATE_STATUS_LABEL[row.status]}
+                    </ToneBadge>
                   ),
                 },
                 {
@@ -658,7 +699,9 @@ export function ModelsPage() {
             <p>{detail.description}</p>
             <HStack gap={1}>
               {detail.tags.map((t) => (
-                <Badge key={t} label={t} variant="purple" />
+                <ToneBadge key={t} tone="off">
+                  {t}
+                </ToneBadge>
               ))}
             </HStack>
             <LicenseStatusBadge status={detail.licenseStatus} />

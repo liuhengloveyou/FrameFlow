@@ -7,6 +7,10 @@ export type VisionBox = {
   label?: string
   score?: number
   text?: string
+  /** 后端航迹 ID：同一目标跨帧稳定，用于平滑渲染的稳定 key */
+  track_id?: number
+  /** 连续丢失拍数：>0 表示该框是航迹保持中的外推位置（非本拍真实检测） */
+  miss?: number
 }
 
 export type VisionFramePayload = {

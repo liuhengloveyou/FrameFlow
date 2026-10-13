@@ -194,6 +194,7 @@ func (s *Service) BindCameraAlgorithm(cameraID, channelID, algorithmID string) (
 		return api.CameraAlgorithm{}, err
 	}
 	s.refreshAlgorithmBoundCount(algorithmID)
+	vision.InvalidateStreamAIPolicies() // 绑定变化立即生效（不等 vision 侧 TTL）
 	return s.bindingToDTO(*row)
 }
 
@@ -216,6 +217,7 @@ func (s *Service) UnbindCameraAlgorithm(cameraID, channelID, bindID string) erro
 		return err
 	}
 	s.refreshAlgorithmBoundCount(algID)
+	vision.InvalidateStreamAIPolicies()
 	return nil
 }
 
@@ -239,6 +241,7 @@ func (s *Service) SaveCameraAlgorithm(cameraID, channelID, bindID string, patch 
 	if err := s.store.saveBinding(&row); err != nil {
 		return api.CameraAlgorithm{}, err
 	}
+	vision.InvalidateStreamAIPolicies() // 规则/区域/取帧参数改动立即生效
 	return s.bindingToDTO(row)
 }
 
@@ -279,6 +282,7 @@ func (s *Service) CameraAlgorithmAction(cameraID, channelID, bindID, action stri
 	if err := s.store.saveBinding(&row); err != nil {
 		return api.CameraAlgorithm{}, err
 	}
+	vision.InvalidateStreamAIPolicies() // 启动/停止算法立即生效
 	return s.bindingToDTO(row)
 }
 

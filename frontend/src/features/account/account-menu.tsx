@@ -22,9 +22,11 @@ import { getErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
- * 侧栏底部账号菜单：改资料 / 改密码 / 退出（不再跳转 /users）
+ * 账号菜单。
+ * - `row`：侧栏底部整行（昵称 + 图标），预留形态；
+ * - `avatar`：全局顶栏右侧圆形头像（设计稿形态），默认。
  */
-export function AccountMenu() {
+export function AccountMenu({ variant = 'avatar' }: { variant?: 'row' | 'avatar' }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const shellNav = useShellNav()
@@ -38,6 +40,35 @@ export function AccountMenu() {
   const [passwordOpen, setPasswordOpen] = useState(false)
 
   const displayName = user?.nickname?.trim() || '未登录'
+  const initial = displayName.slice(0, 1).toUpperCase()
+
+  const menuItems = [
+    {
+      label: '账号信息',
+      icon: UserCircleIcon,
+      onClick: () => {
+        setMenuOpen(false)
+        setProfileOpen(true)
+      },
+    },
+    {
+      label: '修改密码',
+      icon: KeyIcon,
+      onClick: () => {
+        setMenuOpen(false)
+        setPasswordOpen(true)
+      },
+    },
+    { type: 'divider' as const },
+    {
+      label: '退出登录',
+      icon: ArrowRightStartOnRectangleIcon,
+      onClick: () => {
+        setMenuOpen(false)
+        void doLogout()
+      },
+    },
+  ]
 
   /** 退出：passport 清会话 cookie → 清空前端状态 → 硬跳登录页 */
   const doLogout = async () => {
@@ -53,50 +84,45 @@ export function AccountMenu() {
 
   return (
     <>
-      <div className="ff-sidenav-account">
-        <DropdownMenu
-          isMenuOpen={menuOpen}
-          onOpenChange={setMenuOpen}
-          hasChevron={false}
-          placement="above"
-          menuWidth={200}
-          button={{
-            label: displayName,
-            variant: 'ghost',
-            size: 'md',
-            isIconOnly: collapsed,
-            icon: <Icon icon={UserCircleIcon} size="sm" />,
-            className: 'ff-sidenav-account-trigger',
-          }}
-          items={[
-            {
-              label: '账号信息',
-              icon: UserCircleIcon,
-              onClick: () => {
-                setMenuOpen(false)
-                setProfileOpen(true)
-              },
-            },
-            {
-              label: '修改密码',
-              icon: KeyIcon,
-              onClick: () => {
-                setMenuOpen(false)
-                setPasswordOpen(true)
-              },
-            },
-            { type: 'divider' as const },
-            {
-              label: '退出登录',
-              icon: ArrowRightStartOnRectangleIcon,
-              onClick: () => {
-                setMenuOpen(false)
-                void doLogout()
-              },
-            },
-          ]}
-        />
-      </div>
+      {variant === 'avatar' ? (
+        <div className="ff-topbar-account">
+          <DropdownMenu
+            isMenuOpen={menuOpen}
+            onOpenChange={setMenuOpen}
+            hasChevron={false}
+            placement="below"
+            menuWidth={200}
+            button={{
+              label: initial,
+              variant: 'ghost',
+              size: 'md',
+              isIconOnly: true,
+              className: 'ff-topbar-avatar',
+              'aria-label': `账号菜单 · ${displayName}`,
+            }}
+            items={menuItems}
+          />
+        </div>
+      ) : (
+        <div className="ff-sidenav-account">
+          <DropdownMenu
+            isMenuOpen={menuOpen}
+            onOpenChange={setMenuOpen}
+            hasChevron={false}
+            placement="above"
+            menuWidth={200}
+            button={{
+              label: displayName,
+              variant: 'ghost',
+              size: 'md',
+              isIconOnly: collapsed,
+              icon: <Icon icon={UserCircleIcon} size="sm" />,
+              className: 'ff-sidenav-account-trigger',
+            }}
+            items={menuItems}
+          />
+        </div>
+      )}
 
       <AccountProfileDialog
         isOpen={profileOpen}

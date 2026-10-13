@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VIDEO="${VIDEO:-$ROOT/data/datasets/input-1.mp4}"
+VIDEO="${VIDEO:-$ROOT/data/datasets/test-bus.mp4}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8554}"
 STREAM_KEY="${STREAM_KEY:-live}"
@@ -71,6 +71,25 @@ fi
 if [[ ! -f "$VIDEO" ]]; then
   echo "error: 输入文件不存在: $VIDEO" >&2
   exit 1
+fi
+
+# 预检：RTSP ANNOUNCE 只接受**已登记**的流名（设备/推流槽位），否则服务端返回
+# unknown stream → Broken pipe → 无限重推。先查一次 /api/streams 列出现有 key。
+API="${API:-http://127.0.0.1:27788}"
+if command -v curl >/dev/null 2>&1; then
+  _json="$(curl -fsS "${API}/api/streams" 2>/dev/null || true)"
+  if [[ -n "$_json" ]]; then
+    _keys="$(printf '%s' "$_json" | /usr/bin/python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).keys()))' 2>/dev/null || true)"
+    if [[ -n "$_keys" && " $_keys " != *" $STREAM_KEY "* ]]; then
+      echo "error: 流 '$STREAM_KEY' 未登记，RTSP ANNOUNCE 会被拒绝（unknown stream）。" >&2
+      echo "       已登记的 stream_key：" >&2
+      for k in $_keys; do echo "         - $k" >&2; done
+      echo "       用法: $0 -k <上面某个 key>" >&2
+      echo "       新建槽位: UI「设备管理 → 添加设备 → 推流(RTSP)」，或 POST ${API}/api/devices/rtsp" >&2
+      exit 2
+    fi
+    echo "    登记校验: 通过（${API}/api/streams）"
+  fi
 fi
 
 URL="rtsp://${HOST}:${PORT}/${STREAM_KEY}"

@@ -16,6 +16,7 @@ struct ffdecode_ctx {
     AVPacket *pkt;
     struct SwsContext *sws;
     int max_out_w;
+    int streaming; /* 1 = 持久解码：feed 之间保留参考帧，不 drain、不 reset */
     int last_src_w, last_src_h;
     int last_dst_w, last_dst_h;
     enum AVPixelFormat last_fmt;
@@ -75,7 +76,7 @@ static int reset_codec(ffdecode_ctx *c)
     return open_codec(c);
 }
 
-static ffdecode_ctx *ffdecode_open2(enum AVCodecID id, int max_out_w)
+static ffdecode_ctx *ffdecode_open2(enum AVCodecID id, int max_out_w, int streaming)
 {
     ffdecode_ctx *c = (ffdecode_ctx *)av_mallocz(sizeof(*c));
     if (!c)
@@ -84,6 +85,7 @@ static ffdecode_ctx *ffdecode_open2(enum AVCodecID id, int max_out_w)
     if (max_out_w < 0)
         max_out_w = 0;
     c->max_out_w = max_out_w;
+    c->streaming = streaming ? 1 : 0;
     c->codec_id = id;
 
     c->codec = avcodec_find_decoder(id);
@@ -110,13 +112,17 @@ static ffdecode_ctx *ffdecode_open2(enum AVCodecID id, int max_out_w)
     return c;
 }
 
-ffdecode_ctx *ffdecode_open_h264_maxw(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_H264, max_out_w); }
+ffdecode_ctx *ffdecode_open_h264_maxw(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_H264, max_out_w, 0); }
 
-ffdecode_ctx *ffdecode_open_hevc_maxw(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_HEVC, max_out_w); }
+ffdecode_ctx *ffdecode_open_hevc_maxw(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_HEVC, max_out_w, 0); }
 
 ffdecode_ctx *ffdecode_open_h264(void) { return ffdecode_open_h264_maxw(0); }
 
 ffdecode_ctx *ffdecode_open_hevc(void) { return ffdecode_open_hevc_maxw(0); }
+
+ffdecode_ctx *ffdecode_open_h264_stream(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_H264, max_out_w, 1); }
+
+ffdecode_ctx *ffdecode_open_hevc_stream(int max_out_w) { return ffdecode_open2(AV_CODEC_ID_HEVC, max_out_w, 1); }
 
 void ffdecode_close(ffdecode_ctx *c)
 {
@@ -169,7 +175,11 @@ static int frame_to_rgb(ffdecode_ctx *c, uint8_t **rgb_out, int *w_out, int *h_o
     return 0;
 }
 
-static int receive_frames(ffdecode_ctx *c, uint8_t **rgb_out, int *w_out, int *h_out, int *got_frame)
+/*
+ * 取走解码器当前可输出的所有帧。want_rgb=0 时只释放帧缓冲、不做 swscale/RGB 拷贝，
+ * 用于「推进解码状态但这一拍不需要画面」的场景。
+ */
+static int receive_frames(ffdecode_ctx *c, int want_rgb, uint8_t **rgb_out, int *w_out, int *h_out, int *got_frame)
 {
     for (;;) {
         int ret;
@@ -179,15 +189,17 @@ static int receive_frames(ffdecode_ctx *c, uint8_t **rgb_out, int *w_out, int *h
             return 0;
         if (ret < 0)
             return ret;
-        ret = frame_to_rgb(c, rgb_out, w_out, h_out);
-        if (ret < 0)
-            return ret;
+        if (want_rgb) {
+            ret = frame_to_rgb(c, rgb_out, w_out, h_out);
+            if (ret < 0)
+                return ret;
+        }
         *got_frame = 1;
     }
 }
 
-static int decode_au(ffdecode_ctx *c, const uint8_t *au, int au_size, uint8_t **rgb_out, int *w_out,
-                     int *h_out, int *got_frame)
+static int decode_pkt(ffdecode_ctx *c, const uint8_t *au, int au_size, int want_rgb, uint8_t **rgb_out,
+                     int *w_out, int *h_out, int *got_frame)
 {
     int ret;
 
@@ -204,7 +216,7 @@ static int decode_au(ffdecode_ctx *c, const uint8_t *au, int au_size, uint8_t **
     if (ret < 0 && ret != AVERROR(EAGAIN))
         return ret;
 
-    return receive_frames(c, rgb_out, w_out, h_out, got_frame);
+    return receive_frames(c, want_rgb, rgb_out, w_out, h_out, got_frame);
 }
 
 static int drain_and_reset(ffdecode_ctx *c, uint8_t **rgb_out, int *w_out, int *h_out, int *got_frame)
@@ -212,7 +224,7 @@ static int drain_and_reset(ffdecode_ctx *c, uint8_t **rgb_out, int *w_out, int *
     int ret = avcodec_send_packet(c->avctx, NULL);
     if (ret < 0 && ret != AVERROR_EOF)
         return ret;
-    ret = receive_frames(c, rgb_out, w_out, h_out, got_frame);
+    ret = receive_frames(c, 1, rgb_out, w_out, h_out, got_frame);
     if (ret < 0)
         return ret;
     return reset_codec(c);
@@ -255,23 +267,75 @@ static int h265_is_vcl(uint8_t hdr) { return h265_nal_type(hdr) <= 31; }
 
 static int h265_is_aud(uint8_t hdr) { return h265_nal_type(hdr) == 35; }
 
-int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rgb_out, int *w_out,
-                  int *h_out)
+/*
+ * 读一个 UE(v)（无符号指数哥伦布编码）。b 为 NAL 负载（不含起始码与 NAL 头），
+ * n 为长度；pos/bit 为游标。emulation prevention 字节在前几个比特里出现的概率极低，
+ * 解析失败时调用方按「当作新图」处理，行为退回旧的保守切分。
+ */
+static int read_ue(const uint8_t *b, int n, int *pos, int *bit, uint32_t *out)
 {
-    int got_frame = 0;
-    int n, pos, au_start, has_vcl;
+    int zeros = 0;
+    int p = *pos, q = *bit;
+    uint32_t val = 0;
+    int i;
+
+    while (p < n) {
+        if ((b[p] >> (7 - q)) & 1)
+            break;
+        zeros++;
+        if (++q == 8) { q = 0; p++; }
+        if (zeros > 32)
+            return -1;
+    }
+    if (p >= n)
+        return -1;
+    if (++q == 8) { q = 0; p++; } /* 跳过分隔用的 1 */
+    if (zeros == 0) {
+        *out = 0;
+        *pos = p;
+        *bit = q;
+        return 0;
+    }
+    for (i = 0; i < zeros; i++) {
+        if (p >= n)
+            return -1;
+        val = (val << 1) | (uint32_t)((b[p] >> (7 - q)) & 1);
+        if (++q == 8) { q = 0; p++; }
+    }
+    *out = val - 1;
+    *pos = p;
+    *bit = q;
+    return 0;
+}
+
+/*
+ * slice 头第一个字段 first_mb_in_slice。返回 0 时 *first_mb 有效。
+ * b 指向 NAL 头（起始码之后第一字节），sc_len 为起始码长度（NAL 头占 1 字节）。
+ */
+static int slice_first_mb(const uint8_t *b, int n, int sc_len, uint32_t *first_mb)
+{
+    int pos, bit;
+    if (n <= sc_len + 1)
+        return -1;
+    pos = sc_len + 1; /* 跳过起始码 + NAL 头 */
+    bit = 0;
+    return read_ue(b, n, &pos, &bit, first_mb);
+}
+
+/*
+ * 按访问单元切分 Annex-B 缓冲并依次送入解码器；只保留最后一帧 RGB。
+ * 出错时释放 RGB、重置解码器并返回 AVERROR（调用方无需再清理）。
+ */
+static int feed_aus(ffdecode_ctx *c, const uint8_t *data, int n, int want_rgb, uint8_t **rgb_out,
+                    int *w_out, int *h_out, int *got_frame)
+{
+    int pos, au_start, has_vcl;
     int sc_len;
     int r;
 
-    *rgb_out = NULL;
-
-    if (!data || len == 0)
-        return 1;
-
-    n = (int)len;
     pos = find_start_code(data, n, 0, &sc_len);
     if (pos < 0)
-        return 1;
+        return 0;
 
     au_start = pos;
     has_vcl = 0;
@@ -279,7 +343,7 @@ int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rg
     while (pos < n) {
         int sc0, sc1, sc_len0, sc_len1;
         uint8_t hdr;
-        int is_vcl, is_aud;
+        int is_vcl, is_aud, new_pic;
 
         sc0 = find_start_code(data, n, pos, &sc_len0);
         if (sc0 < 0)
@@ -295,8 +359,23 @@ int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rg
             is_aud = h264_is_aud(hdr);
         }
 
-        if ((is_aud || (is_vcl && has_vcl)) && sc0 > au_start) {
-            r = decode_au(c, data + au_start, sc0 - au_start, rgb_out, w_out, h_out, &got_frame);
+        /*
+         * 新访问单元的判定：AUD 一定开新 AU；VCL NAL 则看 slice 头的
+         * first_mb_in_slice —— 为 0 表示这是新一图的第一个 slice，
+         * 大于 0 表示是同一图内的后续 slice，必须和前面的 slice 打进同一个包，
+         * 否则解码器拿到的是不完整的一帧（整帧 conceal）。
+         */
+        new_pic = 0;
+        if (is_vcl) {
+            uint32_t fmb;
+            if (slice_first_mb(data + sc0, n - sc0, sc_len0, &fmb) == 0)
+                new_pic = (fmb == 0);
+            else
+                new_pic = 1; /* 解析失败：保守当作新图 */
+        }
+
+        if ((is_aud || (is_vcl && new_pic)) && has_vcl && sc0 > au_start) {
+            r = decode_pkt(c, data + au_start, sc0 - au_start, want_rgb, rgb_out, w_out, h_out, got_frame);
             if (r < 0) {
                 free_rgb_out(rgb_out);
                 reset_codec(c);
@@ -310,7 +389,7 @@ int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rg
 
         sc1 = find_start_code(data, n, sc0 + sc_len0, &sc_len1);
         if (sc1 < 0) {
-            r = decode_au(c, data + au_start, n - au_start, rgb_out, w_out, h_out, &got_frame);
+            r = decode_pkt(c, data + au_start, n - au_start, want_rgb, rgb_out, w_out, h_out, got_frame);
             if (r < 0) {
                 free_rgb_out(rgb_out);
                 reset_codec(c);
@@ -320,6 +399,24 @@ int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rg
         }
         pos = sc1;
     }
+
+    return 0;
+}
+
+int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rgb_out, int *w_out,
+                  int *h_out)
+{
+    int got_frame = 0;
+    int r;
+
+    *rgb_out = NULL;
+
+    if (!data || len == 0)
+        return 1;
+
+    r = feed_aus(c, data, (int)len, 1, rgb_out, w_out, h_out, &got_frame);
+    if (r < 0)
+        return r;
 
     if (!got_frame) {
         r = drain_and_reset(c, rgb_out, w_out, h_out, &got_frame);
@@ -335,6 +432,27 @@ int ffdecode_feed(ffdecode_ctx *c, const uint8_t *data, size_t len, uint8_t **rg
             return r;
         }
     }
+
+    return got_frame ? 0 : 1;
+}
+
+int ffdecode_feed_stream(ffdecode_ctx *c, const uint8_t *data, size_t len, int want_rgb,
+                         uint8_t **rgb_out, int *w_out, int *h_out)
+{
+    int got_frame = 0;
+    int r;
+
+    *rgb_out = NULL;
+    *w_out = 0;
+    *h_out = 0;
+
+    if (!data || len == 0)
+        return 1;
+
+    /* 持久模式：不 drain、不 reset，参考帧留到下一次 feed 继续用。 */
+    r = feed_aus(c, data, (int)len, want_rgb ? 1 : 0, rgb_out, w_out, h_out, &got_frame);
+    if (r < 0)
+        return r;
 
     return got_frame ? 0 : 1;
 }

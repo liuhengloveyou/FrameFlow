@@ -1,87 +1,103 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
-import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
-import { TextInput } from '@astryxdesign/core/TextInput'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Selector } from '@astryxdesign/core/Selector'
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core/SegmentedControl'
-import { HStack } from '@astryxdesign/core/HStack'
-import { VStack } from '@astryxdesign/core/VStack'
-import { Text } from '@astryxdesign/core/Text'
+import { MagnifyingGlassIcon } from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
 import { DataTable, proportional, type DataTableColumn } from '@/components/data-table'
+import {
+  ConfidenceValue,
+  EventTypeBadge,
+  ReviewStatusBadge,
+} from '@/components/event-badges'
+import { MediaThumb } from '@/components/media-thumb'
 import { searchEvents } from '@/apis/search-api'
-import { listCameras } from '@/apis/devices-api'
+import { listReviewEvents } from '@/apis/review-api'
 import type { ReviewEventStatus, SearchHit } from '@/types/api'
 
 type ViewMode = 'cards' | 'table'
+type SortMode = 'time' | 'score'
+
+const EXAMPLES = ['未戴安全帽', '电动车', '夜间人员', '烟火']
+
+function formatTime(iso: string) {
+  const d = new Date(iso)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 export function SearchPage() {
   const navigate = useNavigate()
-  const [view, setView] = useState<ViewMode>('cards')
-  const [q, setQ] = useState('')
-  const [cameraId, setCameraId] = useState('')
-  const [status, setStatus] = useState<ReviewEventStatus | ''>('')
-  const [objectClass, setObjectClass] = useState('')
-  const [objectColor, setObjectColor] = useState('')
-  const [ocr, setOcr] = useState('')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const [applied, setApplied] = useState({
-    q: '',
-    cameraId: '',
-    status: '' as ReviewEventStatus | '',
-    objectClass: '',
-    objectColor: '',
-    ocr: '',
-    from: '',
-    to: '',
-  })
+  const routeSearch = useSearch({ from: '/_authenticated/search/' })
+  const initialQ = (routeSearch as { q?: string }).q ?? ''
 
-  const camerasQuery = useQuery({
-    queryKey: ['cameras', { forSearch: true }],
-    queryFn: () => listCameras({ page: 1, pageSize: 200 }),
-  })
+  const [view, setView] = useState<ViewMode>('cards')
+  const [sort, setSort] = useState<SortMode>('time')
+  const [q, setQ] = useState(initialQ)
+  const [applied, setApplied] = useState(initialQ)
+  const [elapsedMs, setElapsedMs] = useState(0)
 
   const query = useQuery({
-    queryKey: ['smart-search', applied],
-    queryFn: () =>
-      searchEvents({
-        q: applied.q || undefined,
-        cameraIds: applied.cameraId ? [applied.cameraId] : undefined,
-        status: applied.status || undefined,
-        objectClass: applied.objectClass || undefined,
-        objectColor: applied.objectColor || undefined,
-        ocr: applied.ocr || undefined,
-        from: applied.from || undefined,
-        to: applied.to || undefined,
-        pageSize: 100,
-      }),
+    queryKey: ['smart-search', { q: applied }],
+    queryFn: async () => {
+      const t0 = performance.now()
+      try {
+        return await searchEvents({
+          q: applied || undefined,
+          pageSize: 100,
+        })
+      } finally {
+        setElapsedMs(performance.now() - t0)
+      }
+    },
   })
 
-  const items = query.data?.items ?? []
+  const hits = query.data?.items ?? []
 
-  const cameraOptions = useMemo(
-    () => [
-      { label: '全部摄像头', value: '' },
-      ...(camerasQuery.data?.items.map((c) => ({
-        label: c.name,
-        value: String(c.id),
-      })) ?? []),
-    ],
-    [camerasQuery.data],
-  )
+  /** 置信度不在搜索结果里；按 eventId 关联核查事件取真实分数 */
+  const scoresQuery = useQuery({
+    queryKey: ['review-events', { forSearchScore: true }],
+    queryFn: () => listReviewEvents({ pageSize: 500 }),
+    enabled: hits.length > 0,
+    staleTime: 60_000,
+  })
+  const scoreMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const e of scoresQuery.data?.items ?? []) {
+      if (e.score != null) map.set(e.id, e.score)
+    }
+    return map
+  }, [scoresQuery.data])
+
+  const items = useMemo(() => {
+    const list = [...hits]
+    if (sort === 'score') {
+      list.sort(
+        (a, b) => (scoreMap.get(b.eventId) ?? -1) - (scoreMap.get(a.eventId) ?? -1),
+      )
+    } else {
+      list.sort(
+        (a, b) =>
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+      )
+    }
+    return list
+  }, [hits, sort, scoreMap])
+
+  function submitSearch(keyword: string) {
+    const k = keyword.trim()
+    setQ(k)
+    setApplied(k)
+  }
 
   const columns = [
     {
       key: 'title',
       header: '标题',
       width: proportional(2),
-      render: (r: SearchHit) => <Text type="body">{r.title}</Text>,
+      render: (r: SearchHit) => (
+        <span className="ff-page-title">{r.title}</span>
+      ),
     },
     {
       key: 'cameraName',
@@ -89,209 +105,179 @@ export function SearchPage() {
       width: proportional(1.4),
     },
     {
-      key: 'objectClass',
-      header: '类别',
-      width: proportional(1),
-      render: (r: SearchHit) => r.objectClass ?? '—',
-    },
-    {
-      key: 'objectColor',
-      header: '颜色',
-      width: proportional(1),
-      render: (r: SearchHit) => r.objectColor ?? '—',
-    },
-    {
-      key: 'ocrText',
-      header: 'OCR',
+      key: 'type',
+      header: '类型',
       width: proportional(1.2),
-      render: (r: SearchHit) => r.ocrText || '—',
+      render: (r: SearchHit) => (
+        <EventTypeBadge label={r.title || r.objectClass} />
+      ),
+    },
+    {
+      key: 'score',
+      header: 'AI 置信度',
+      width: pixel96(),
+      align: 'end',
+      render: (r: SearchHit) => (
+        <ConfidenceValue score={scoreMap.get(r.eventId)} />
+      ),
     },
     {
       key: 'status',
       header: '状态',
       width: proportional(1),
       render: (r: SearchHit) => (
-        <Badge
-          label={r.status === 'reviewed' ? '已核查' : '待核查'}
-          variant={r.status === 'reviewed' ? 'success' : 'warning'}
-        />
+        <ReviewStatusBadge status={r.status as ReviewEventStatus} />
       ),
     },
     {
       key: 'occurredAt',
       header: '时间',
       width: proportional(1.6),
-      render: (r: SearchHit) => new Date(r.occurredAt).toLocaleString(),
+      render: (r: SearchHit) => formatTime(r.occurredAt),
     },
   ] satisfies DataTableColumn<SearchHit>[]
 
   return (
-    <PageLayout
-      title="智能搜索"
-      actions={
-        <SegmentedControl
-          label="结果视图"
-          value={view}
-          onChange={(v) => setView(v as ViewMode)}
+    <PageLayout title="智能搜索" badge="全量画面事件" contentPadding={4}>
+      {/* 居中大搜索框 */}
+      <div className="ff-search-hero">
+        <form
+          className="ff-search-hero-box"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submitSearch(q)
+          }}
+          role="search"
         >
-          <SegmentedControlItem value="cards" label="卡片" />
-          <SegmentedControlItem value="table" label="表格" />
-        </SegmentedControl>
-      }
-      toolbar={
-        <div className="ff-search-filters">
-          <TextInput
-            label="关键词"
-            isLabelHidden
-            placeholder="标题 / 摄像头"
+          <MagnifyingGlassIcon aria-hidden />
+          <input
             value={q}
-            onChange={setQ}
-            hasClear
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜画面内容：未戴安全帽、电动车、夜间人员…"
+            aria-label="搜索画面内容"
           />
+          <button type="submit">搜索</button>
+        </form>
+        <div className="ff-search-chips">
+          <span>试试搜</span>
+          {EXAMPLES.map((k) => (
+            <button
+              key={k}
+              type="button"
+              className="ff-search-chip"
+              onClick={() => submitSearch(k)}
+            >
+              {k}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 结果统计 + 排序 + 视图 */}
+      <div className="ff-search-result-bar">
+        <span className="ff-toolbar-hint">
+          找到 <strong>{query.data?.total ?? 0}</strong> 条结果 · 用时{' '}
+          <strong>{(elapsedMs / 1000).toFixed(2)}s</strong>
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
           <Selector
-            label="摄像头"
+            label="排序"
             isLabelHidden
-            placeholder="全部摄像头"
-            hasClear
-            value={cameraId}
-            onChange={(v) => setCameraId(v ?? '')}
-            options={cameraOptions.filter((o) => o.value)}
-          />
-          <Selector
-            label="状态"
-            isLabelHidden
-            placeholder="处理状态"
-            hasClear
-            value={status}
-            onChange={(v) => setStatus((v ?? '') as ReviewEventStatus | '')}
-            options={[
-              { label: '待核查', value: 'unreviewed' },
-              { label: '已核查', value: 'reviewed' },
-            ]}
-          />
-          <Selector
-            label="类别"
-            isLabelHidden
-            placeholder="对象类别"
-            hasClear
-            value={objectClass}
-            onChange={(v) => setObjectClass(v ?? '')}
-            options={[
-              { label: '人', value: '人' },
-              { label: '车', value: '车' },
-              { label: '非机动车', value: '非机动车' },
-              { label: '其他', value: '其他' },
-            ]}
-          />
-          <TextInput
-            label="颜色"
-            isLabelHidden
-            placeholder="对象颜色"
-            value={objectColor}
-            onChange={setObjectColor}
-            hasClear
-          />
-          <TextInput
-            label="OCR"
-            isLabelHidden
-            placeholder="车牌 / 工牌"
-            value={ocr}
-            onChange={setOcr}
-            hasClear
-          />
-          <TextInput
-            label="起"
-            isLabelHidden
-            placeholder="起始 ISO 时间"
-            value={from}
-            onChange={setFrom}
-          />
-          <TextInput
-            label="止"
-            isLabelHidden
-            placeholder="结束 ISO 时间"
-            value={to}
-            onChange={setTo}
-          />
-          <Button
-            label="检索"
             size="sm"
-            clickAction={async () => {
-              setApplied({
-                q,
-                cameraId,
-                status,
-                objectClass,
-                objectColor,
-                ocr,
-                from,
-                to,
-              })
-            }}
+            value={sort}
+            onChange={(v) => setSort((v as SortMode) || 'time')}
+            options={[
+              { label: '按时间', value: 'time' },
+              { label: '按置信度', value: 'score' },
+            ]}
+          />
+          <div className="ff-seg" role="radiogroup" aria-label="结果视图">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'cards'}
+              className="ff-seg-item"
+              data-active={view === 'cards' ? 'true' : undefined}
+              title="卡片视图"
+              onClick={() => setView('cards')}
+            >
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1.5" y="1.5" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="8.5" y="1.5" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="1.5" y="8.5" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="8.5" y="8.5" width="6" height="6" rx="1.4" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'table'}
+              className="ff-seg-item"
+              data-active={view === 'table' ? 'true' : undefined}
+              title="表格视图"
+              onClick={() => setView('table')}
+            >
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1.5" y="1.5" width="13" height="3" rx="1" fill="currentColor" />
+                <rect x="1.5" y="6" width="13" height="3" rx="1" fill="currentColor" opacity="0.55" />
+                <rect x="1.5" y="10.5" width="13" height="3" rx="1" fill="currentColor" opacity="0.55" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 结果区 */}
+      {query.isLoading ? (
+        <div className="ff-placeholder">搜索中…</div>
+      ) : items.length === 0 ? (
+        <div className="ff-placeholder">
+          无匹配结果，换个关键词或缩小筛选范围试试
+        </div>
+      ) : view === 'table' ? (
+        <div className="ff-table-wrap">
+          <DataTable
+            data={items}
+            idKey="id"
+            isStriped
+            emptyLabel="无匹配结果"
+            columns={columns}
+            onRowClick={() => void navigate({ to: '/review' })}
           />
         </div>
-      }
-    >
-      <VStack gap={3}>
-        <Text type="supporting" color="secondary">
-          共 {query.data?.total ?? 0} 条结果（Mock 特征检索）
-        </Text>
-
-        {view === 'table' ? (
-          <div className="ff-table-wrap">
-            <DataTable
-              data={items}
-              idKey="id"
-              emptyLabel={query.isLoading ? '加载中…' : '无匹配结果'}
-              columns={columns}
-              onRowClick={() => void navigate({ to: '/review' })}
-            />
-          </div>
-        ) : query.isLoading ? (
-          <div className="ff-placeholder">加载中…</div>
-        ) : items.length === 0 ? (
-          <div className="ff-placeholder">无匹配结果</div>
-        ) : (
-          <div className="ff-search-cards">
-            {items.map((h) => (
+      ) : (
+        <div className="ff-result-grid">
+          {items.map((h) => {
+            const score = scoreMap.get(h.eventId)
+            return (
               <button
                 key={h.id}
                 type="button"
-                className="ff-search-card"
-                onClick={() => {
-                  void navigate({ to: '/review' })
-                }}
+                className="ff-result-card"
+                onClick={() => void navigate({ to: '/review' })}
               >
-                <div className="ff-search-card-thumb">
-                  {h.thumbUrl ? <img src={h.thumbUrl} alt="" /> : null}
+                <MediaThumb src={h.thumbUrl} alt={h.title} seed={h.id} />
+                <div className="ff-result-card-meta">
+                  <span className="ff-result-card-time">
+                    {formatTime(h.occurredAt)}
+                  </span>
+                  <EventTypeBadge label={h.title || h.objectClass} />
                 </div>
-                <VStack gap={1}>
-                  <HStack justify="between" vAlign="center" gap={1}>
-                    <Text type="body">{h.title}</Text>
-                    <Badge
-                      label={h.status === 'reviewed' ? '已核查' : '待核查'}
-                      variant={h.status === 'reviewed' ? 'success' : 'warning'}
-                    />
-                  </HStack>
-                  <Text type="supporting" color="secondary">
-                    {h.cameraName}
-                    {h.objectClass ? ` · ${h.objectClass}` : ''}
-                    {h.objectColor ? ` · ${h.objectColor}` : ''}
-                  </Text>
-                  {h.ocrText ? (
-                    <Text type="supporting" color="secondary">
-                      OCR {h.ocrText}
-                    </Text>
-                  ) : null}
-                  <Text type="supporting" color="secondary">
-                    {new Date(h.occurredAt).toLocaleString()}
-                  </Text>
-                </VStack>
+                <div className="ff-result-card-foot">
+                  <span>{h.cameraName}</span>
+                  {h.ocrText ? <span>OCR {h.ocrText}</span> : null}
+                  <ConfidenceValue score={score} />
+                </div>
               </button>
-            ))}
-          </div>
-        )}
-      </VStack>
+            )
+          })}
+        </div>
+      )}
     </PageLayout>
   )
+}
+
+/** 表格列宽小工具：96px 固定列 */
+function pixel96() {
+  return proportional(0.9, { minWidth: 96 })
 }

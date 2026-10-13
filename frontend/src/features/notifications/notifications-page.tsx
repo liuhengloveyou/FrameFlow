@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
 import { Switch } from '@astryxdesign/core/Switch'
@@ -13,8 +12,18 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  CheckCircleIcon,
+  MegaphoneIcon,
+  PaperAirplaneIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
 import { SidePanel } from '@/components/side-panel'
+import { ToneBadge } from '@/components/tone-badge'
+import { DeliveryStatusBadge, EnabledBadge } from '@/components/status-badge'
 import { DataTable, proportional, pixel, type DataTableColumn } from '@/components/data-table'
 import {
   createNotifyChannel,
@@ -38,12 +47,6 @@ const KIND_LABEL: Record<NotifyChannelKind, string> = {
   email: '邮件',
   webhook: 'Webhook',
   im: '即时通讯',
-}
-
-const STATUS_LABEL: Record<NotifyDeliveryStatus, string> = {
-  success: '成功',
-  failed: '失败',
-  pending: '排队',
 }
 
 const emptyForm: NotifyChannelInput = {
@@ -70,8 +73,18 @@ export function NotificationsPage() {
   const deliveriesQuery = useQuery({
     queryKey: ['notify-deliveries', { status, q }],
     queryFn: () => listNotifyDeliveries({ status: status || undefined, q: q || undefined }),
-    enabled: tab === 'deliveries',
   })
+
+  const counts = useMemo(() => {
+    const channels = channelsQuery.data ?? []
+    const deliveries = deliveriesQuery.data?.items ?? []
+    return {
+      channels: channels.length,
+      enabled: channels.filter((c) => c.enabled).length,
+      success: deliveries.filter((d) => d.status === 'success').length,
+      failed: deliveries.filter((d) => d.status === 'failed').length,
+    }
+  }, [channelsQuery.data, deliveriesQuery.data])
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -111,7 +124,9 @@ export function NotificationsPage() {
           key: 'kind',
           header: '类型',
           width: proportional(1),
-          render: (r: NotifyChannel) => <Badge label={KIND_LABEL[r.kind]} variant="neutral" />,
+          render: (r: NotifyChannel) => (
+            <ToneBadge tone="info">{KIND_LABEL[r.kind]}</ToneBadge>
+          ),
         },
         {
           key: 'endpoint',
@@ -126,8 +141,8 @@ export function NotificationsPage() {
         {
           key: 'enabled',
           header: '启用',
-          width: pixel(80),
-          render: (r: NotifyChannel) => (r.enabled ? '是' : '否'),
+          width: pixel(96),
+          render: (r: NotifyChannel) => <EnabledBadge enabled={r.enabled} />,
         },
         {
           key: 'updatedAt',
@@ -193,14 +208,7 @@ export function NotificationsPage() {
       key: 'status',
       header: '状态',
       width: proportional(1),
-      render: (r: NotifyDelivery) => (
-        <Badge
-          label={STATUS_LABEL[r.status]}
-          variant={
-            r.status === 'success' ? 'success' : r.status === 'failed' ? 'error' : 'warning'
-          }
-        />
-      ),
+      render: (r: NotifyDelivery) => <DeliveryStatusBadge status={r.status} />,
     },
     {
       key: 'detail',
@@ -216,55 +224,91 @@ export function NotificationsPage() {
   ] satisfies DataTableColumn<NotifyDelivery>[]
 
   return (
-    <PageLayout
-      title="通知中心"
-      actions={
-        tab === 'channels' ? (
-          <Button
-            label="新建渠道"
-            size="sm"
-            clickAction={() => {
-              setEditing(null)
-              setForm(emptyForm)
-              setPanelOpen(true)
-            }}
-          />
-        ) : null
-      }
-      toolbar={
-        <HStack gap={2} vAlign="center" wrap="wrap">
-          <SegmentedControl label="通知视图" value={tab} onChange={(v) => setTab(v as Tab)}>
-            <SegmentedControlItem value="channels" label="渠道配置" />
-            <SegmentedControlItem value="deliveries" label="投递记录" />
-          </SegmentedControl>
-          {tab === 'deliveries' ? (
-            <>
-              <TextInput
-                label="搜索"
-                isLabelHidden
-                placeholder="标题 / 渠道"
-                value={q}
-                onChange={setQ}
-                hasClear
-              />
-              <Selector
-                label="状态"
-                isLabelHidden
-                placeholder="全部状态"
-                hasClear
-                value={status}
-                onChange={(v) => setStatus((v ?? '') as NotifyDeliveryStatus | '')}
-                options={[
-                  { label: '成功', value: 'success' },
-                  { label: '失败', value: 'failed' },
-                  { label: '排队', value: 'pending' },
-                ]}
-              />
-            </>
-          ) : null}
-        </HStack>
-      }
-    >
+    <PageLayout title="通知中心" badge="告警送达">
+      <PageToolbar
+        filters={
+          <>
+            <SegmentedControl
+              label="通知视图"
+              value={tab}
+              onChange={(v) => setTab(v as Tab)}
+            >
+              <SegmentedControlItem value="channels" label="渠道配置" />
+              <SegmentedControlItem value="deliveries" label="投递记录" />
+            </SegmentedControl>
+            {tab === 'deliveries' ? (
+              <>
+                <TextInput
+                  label="搜索"
+                  isLabelHidden
+                  placeholder="标题 / 渠道"
+                  value={q}
+                  onChange={setQ}
+                  hasClear
+                />
+                <Selector
+                  label="状态"
+                  isLabelHidden
+                  placeholder="全部状态"
+                  hasClear
+                  value={status}
+                  onChange={(v) => setStatus((v ?? '') as NotifyDeliveryStatus | '')}
+                  options={[
+                    { label: '成功', value: 'success' },
+                    { label: '失败', value: 'failed' },
+                    { label: '排队', value: 'pending' },
+                  ]}
+                />
+              </>
+            ) : (
+              <span className="ff-toolbar-hint">
+                渠道用于接收报警通知；投递记录可追溯每次发送结果
+              </span>
+            )}
+          </>
+        }
+        stats={
+          <InlineStatGroup>
+            <InlineStat
+              icon={<MegaphoneIcon />}
+              value={counts.channels}
+              label="通知渠道"
+            />
+            <InlineStat
+              icon={<CheckCircleIcon />}
+              value={counts.enabled}
+              label="已启用"
+              tone="ok"
+            />
+            <InlineStat
+              icon={<PaperAirplaneIcon />}
+              value={counts.success}
+              label="投递成功"
+              tone="teal"
+            />
+            <InlineStat
+              icon={<XCircleIcon />}
+              value={counts.failed}
+              label="投递失败"
+              tone="warn"
+            />
+          </InlineStatGroup>
+        }
+        actions={
+          tab === 'channels' ? (
+            <Button
+              label="新建渠道"
+              size="sm"
+              variant="primary"
+              clickAction={() => {
+                setEditing(null)
+                setForm(emptyForm)
+                setPanelOpen(true)
+              }}
+            />
+          ) : null
+        }
+      />
       {tab === 'channels' ? (
         <div className="ff-table-wrap">
           <DataTable

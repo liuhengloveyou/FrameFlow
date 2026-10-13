@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { NumberInput } from '@astryxdesign/core/NumberInput'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
@@ -12,6 +11,9 @@ import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
 import { SidePanel } from '@/components/side-panel'
+import { PageToolbar } from '@/components/page-toolbar'
+import { ToneBadge } from '@/components/tone-badge'
+import { EnabledBadge } from '@/components/status-badge'
 import { DataTable, proportional, pixel, type DataTableColumn } from '@/components/data-table'
 import {
   applyLinkageRules,
@@ -171,35 +173,32 @@ export function LinkageRulesPanel() {
 
   return (
     <>
-      <HStack gap={2} wrap="wrap" style={{ marginBottom: 12 }}>
-        <Badge
-          label={`启用 ${enabledCount}/${rulesQuery.data?.length ?? 0}`}
-          variant="success"
-        />
-        <Text type="supporting" color="secondary">
-          按优先级匹配：级别 + 算法 + 分组 → 自动绑定工作流；手工联动优先
-        </Text>
-        <div style={{ flex: 1 }} />
-        <Button
-          label="应用到未联动报警"
-          size="sm"
-          variant="secondary"
-          isLoading={applyMutation.isPending}
-          clickAction={async () => {
-            await applyMutation.mutateAsync()
-          }}
-        />
-        <Button label="新建规则" size="sm" variant="primary" onClick={openCreate} />
-        <Button
-          label="刷新"
-          size="sm"
-          variant="ghost"
-          isLoading={rulesQuery.isFetching}
-          clickAction={async () => {
-            await rulesQuery.refetch()
-          }}
-        />
-      </HStack>
+      <PageToolbar
+        filters={
+          <>
+            <ToneBadge tone={enabledCount ? 'ok' : 'off'}>
+              启用 {enabledCount}/{rulesQuery.data?.length ?? 0}
+            </ToneBadge>
+            <span className="ff-toolbar-hint">
+              按优先级匹配：级别 + 算法 + 分组 → 自动绑定工作流；手工联动优先
+            </span>
+          </>
+        }
+        actions={
+          <>
+            <Button
+              label="应用到未联动报警"
+              size="sm"
+              variant="secondary"
+              isLoading={applyMutation.isPending}
+              clickAction={async () => {
+                await applyMutation.mutateAsync()
+              }}
+            />
+            <Button label="新建规则" size="sm" variant="primary" onClick={openCreate} />
+          </>
+        }
+      />
 
       <div className="ff-table-wrap">
         <DataTable
@@ -229,12 +228,7 @@ export function LinkageRulesPanel() {
                 key: 'enabled',
                 header: '状态',
                 width: pixel(80),
-                render: (r) => (
-                  <Badge
-                    label={r.enabled ? '启用' : '停用'}
-                    variant={r.enabled ? 'success' : 'neutral'}
-                  />
-                ),
+                  render: (r) => <EnabledBadge enabled={r.enabled} />,
               },
               {
                 key: 'levels',

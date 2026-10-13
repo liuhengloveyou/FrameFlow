@@ -3,7 +3,11 @@ package vision
 import (
 	"image"
 	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	ort "github.com/yalue/onnxruntime_go"
 	xdraw "golang.org/x/image/draw"
@@ -110,6 +114,9 @@ func letterboxRGB888Into(rgb []byte, ow, oh, dst int, s *letterboxScratch) (blob
 }
 
 // newYOLOSession 创建带图优化与线程限制的 ORT session（参考 MediaAI：低延迟优先）。
+// macOS 上默认追加 CoreML EP（Apple GPU/ANE）：yolo26l@640 单帧从 ~226ms(CPU 单线程)
+// 降到数十毫秒。FRAMEFLOW_YOLO_EP=cpu|coreml|cuda|... 可强制指定或禁用。
+// 注意：CoreML 首次加载模型有编译缓存开销（秒级），只在建 session 时发生一次。
 func newYOLOSession(modelPath, inName, outName string) (*ort.DynamicAdvancedSession, error) {
 	opts, err := ort.NewSessionOptions()
 	if err != nil {
@@ -126,5 +133,60 @@ func newYOLOSession(modelPath, inName, outName string) (*ort.DynamicAdvancedSess
 	} else {
 		_ = opts.SetGraphOptimizationLevel(ort.GraphOptimizationLevelEnableAll)
 	}
+	applyBestExecutionProvider(opts, modelPath)
 	return ort.NewDynamicAdvancedSession(modelPath, []string{inName}, []string{outName}, opts)
+}
+
+// applyBestExecutionProvider 按平台追加最优推理加速后端；失败只警告并回退 CPU，
+// 不影响主流程（CPU 路径已由调用方配好线程与图优化）。
+//
+//   - darwin（Apple Silicon / Intel）：CoreML（GPU/ANE）
+//   - linux/windows 且检测到 NVIDIA GPU：CUDA（需 onnxruntime-gpu 版库，否则自动回退）
+//   - 其他：CPU
+//
+// FRAMEFLOW_YOLO_EP 可强制指定：cpu（禁用加速）/ coreml / cuda / dml / openvino / tensorrt。
+func applyBestExecutionProvider(opts *ort.SessionOptions, modelPath string) {
+	if opts == nil {
+		return
+	}
+	force := strings.ToLower(strings.TrimSpace(os.Getenv("FRAMEFLOW_YOLO_EP")))
+	if force == "cpu" {
+		return
+	}
+	name := force
+	if name == "" {
+		switch runtime.GOOS {
+		case "darwin":
+			name = "CoreMLExecutionProvider"
+		default:
+			if hasNvidiaGPU() {
+				name = "CUDAExecutionProvider"
+			}
+		}
+	}
+	if name == "" {
+		return // 无可用加速后端：纯 CPU
+	}
+	if err := opts.AppendExecutionProvider(name, nil); err != nil {
+		log.Warn().Err(err).Str("ep", name).Str("model", filepath.Base(modelPath)).
+			Msg("[vision] 推理加速后端追加失败，回退 CPU")
+		return
+	}
+	log.Info().Str("ep", name).Str("model", filepath.Base(modelPath)).
+		Bool("forced", force != "").Msg("[vision] 推理加速后端已启用")
+}
+
+// hasNvidiaGPU 粗判机器上是否有 NVIDIA GPU（nvidia-smi 或 /dev/nvidia0）。
+// 只用于「要不要尝试 CUDA EP」的决策；库不带 CUDA 时追加会失败并自动回退 CPU。
+func hasNvidiaGPU() bool {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		return false
+	}
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/dev/nvidia0"); err == nil {
+		return true
+	}
+	return false
 }

@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@astryxdesign/core/Button'
 import { Card } from '@astryxdesign/core/Card'
-import { Badge } from '@astryxdesign/core/Badge'
 import { Switch } from '@astryxdesign/core/Switch'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
@@ -13,19 +12,35 @@ import {
 import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
+import {
+  CheckCircleIcon,
+  CpuChipIcon,
+  ExclamationTriangleIcon,
+  ServerStackIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { PageTabsRow } from '@/components/page-tabs-row'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import { ToneBadge, type Tone } from '@/components/tone-badge'
 import { DataTable, proportional, type DataTableColumn } from '@/components/data-table'
 import { getSystemSnapshot, type SystemAccelerator } from '@/apis/system-api'
 import { listAuditLogs, type AuditLog } from '@/apis/users-api'
 
 const ACCEL_STATUS: Record<
   SystemAccelerator['status'],
-  { label: string; variant: 'success' | 'warning' | 'neutral' | 'error' }
+  { label: string; tone: Tone }
 > = {
-  ready: { label: '空闲', variant: 'success' },
-  busy: { label: '忙碌', variant: 'warning' },
-  missing: { label: '未检测到', variant: 'neutral' },
-  error: { label: '异常', variant: 'error' },
+  ready: { label: '空闲', tone: 'ok' },
+  busy: { label: '忙碌', tone: 'warn' },
+  missing: { label: '未检测到', tone: 'off' },
+  error: { label: '异常', tone: 'danger' },
+}
+
+const SERVICE_STATUS: Record<string, { label: string; tone: Tone }> = {
+  up: { label: '正常', tone: 'ok' },
+  degraded: { label: '降级', tone: 'warn' },
+  down: { label: '异常', tone: 'danger' },
 }
 
 const REFRESH_MS = 5000
@@ -93,108 +108,140 @@ export function SystemPage() {
 
   return (
     <PageLayout
-      title="运维"
+      title="系统运维"
+      badge={data?.version ? `v${data.version.replace(/^v/i, '')}` : '资源探针'}
       toolbar={
-        <SegmentedControl label="系统视图" value={tab} onChange={(v) => setTab(v as Tab)}>
-          <SegmentedControlItem value="overview" label="资源探针" />
-          <SegmentedControlItem value="audit" label="审计日志" />
-        </SegmentedControl>
-      }
-      actions={
-        tab === 'overview' ? (
-          <HStack gap={3} vAlign="center" wrap="wrap">
-            <Switch
-              label={`自动刷新 ${REFRESH_MS / 1000}s`}
-              value={autoRefresh}
-              onChange={setAutoRefresh}
-            />
-            {data?.sampledAt ? (
-              <Text type="supporting" color="secondary">
-                采样 {new Date(data.sampledAt).toLocaleTimeString()}
-                {query.isFetching ? ' · 更新中' : ''}
-              </Text>
-            ) : null}
-            <Button
-              label="立即刷新"
-              variant="secondary"
-              size="sm"
-              isLoading={query.isFetching}
-              clickAction={async () => {
-                await query.refetch()
-              }}
-            />
-          </HStack>
-        ) : (
-          <HStack gap={2} vAlign="center" wrap="wrap">
-            <TextInput
-              label="搜索"
-              isLabelHidden
-              placeholder="动作 / 账号 / 对象"
-              value={auditQ}
-              onChange={setAuditQ}
-              hasClear
-            />
-            <Selector
-              label="模块"
-              isLabelHidden
-              placeholder="全部模块"
-              hasClear
-              value={auditModule}
-              onChange={(v) => setAuditModule(v ?? '')}
-              options={[
-                { label: '认证', value: '认证' },
-                { label: '设备', value: '设备' },
-                { label: '报警', value: '报警' },
-                { label: '工作流', value: '工作流' },
-                { label: '事件核查', value: '事件核查' },
-                { label: '录像', value: '录像' },
-                { label: '用户', value: '用户' },
-              ]}
-            />
-          </HStack>
-        )
+        <PageTabsRow
+          stats={
+            tab === 'overview' && data ? (
+              <InlineStatGroup>
+                <InlineStat
+                  icon={<ServerStackIcon />}
+                  value={data.services.length}
+                  label="受监控服务"
+                />
+                <InlineStat
+                  icon={<CheckCircleIcon />}
+                  value={data.services.filter((s) => s.status === 'up').length}
+                  label="服务正常"
+                  tone="ok"
+                />
+                <InlineStat
+                  icon={<CpuChipIcon />}
+                  value={data.accelerators.length}
+                  label="算力设备"
+                  tone="teal"
+                />
+                <InlineStat
+                  icon={<ExclamationTriangleIcon />}
+                  value={data.alerts.length}
+                  label="系统告警"
+                  tone="warn"
+                />
+              </InlineStatGroup>
+            ) : undefined
+          }
+        >
+          <SegmentedControl label="系统视图" value={tab} onChange={(v) => setTab(v as Tab)}>
+            <SegmentedControlItem value="overview" label="资源探针" />
+            <SegmentedControlItem value="audit" label="审计日志" />
+          </SegmentedControl>
+        </PageTabsRow>
       }
     >
       {tab === 'audit' ? (
-        <div className="ff-table-wrap">
-          <DataTable
-            data={auditQuery.data?.items ?? []}
-            idKey="id"
-            emptyLabel={auditQuery.isLoading ? '加载中…' : '暂无审计日志'}
-            columns={auditColumns}
+        <>
+          <PageToolbar
+            filters={
+              <>
+                <TextInput
+                  label="搜索"
+                  isLabelHidden
+                  placeholder="动作 / 账号 / 对象"
+                  value={auditQ}
+                  onChange={setAuditQ}
+                  hasClear
+                />
+                <Selector
+                  label="模块"
+                  isLabelHidden
+                  placeholder="全部模块"
+                  hasClear
+                  value={auditModule}
+                  onChange={(v) => setAuditModule(v ?? '')}
+                  options={[
+                    { label: '认证', value: '认证' },
+                    { label: '设备', value: '设备' },
+                    { label: '报警', value: '报警' },
+                    { label: '工作流', value: '工作流' },
+                    { label: '事件核查', value: '事件核查' },
+                    { label: '录像', value: '录像' },
+                    { label: '用户', value: '用户' },
+                  ]}
+                />
+              </>
+            }
+            actions={<span className="ff-toolbar-hint">最近 100 条操作记录</span>}
           />
-        </div>
+          <div className="ff-table-wrap">
+            <DataTable
+              data={auditQuery.data?.items ?? []}
+              idKey="id"
+              emptyLabel={auditQuery.isLoading ? '加载中…' : '暂无审计日志'}
+              columns={auditColumns}
+            />
+          </div>
+        </>
       ) : data ? (
         <>
-          <HStack gap={2} vAlign="center">
-            <Badge label={data.version} variant="neutral" />
-            <Text type="supporting" color="secondary">
-              运行时长 {data.uptime}
-            </Text>
-          </HStack>
+          <PageToolbar
+            filters={
+              <>
+                <ToneBadge tone="info">{data.version}</ToneBadge>
+                <span className="ff-toolbar-hint">
+                  运行时长 {data.uptime}
+                  {data.sampledAt
+                    ? ` · 采样 ${new Date(data.sampledAt).toLocaleTimeString()}`
+                    : ''}
+                </span>
+              </>
+            }
+            actions={
+              <>
+                <Switch
+                  label={`自动刷新 ${REFRESH_MS / 1000}s`}
+                  value={autoRefresh}
+                  onChange={setAutoRefresh}
+                />
+                <Button
+                  label="立即刷新"
+                  variant="secondary"
+                  size="sm"
+                  isLoading={query.isFetching}
+                  clickAction={async () => {
+                    await query.refetch()
+                  }}
+                />
+              </>
+            }
+          />
 
           <VStack gap={2}>
             <Text type="label">服务状态</Text>
             <div className="ff-model-grid">
-              {data.services.map((s) => (
-                <Card key={s.name} padding={4}>
-                  <VStack gap={2}>
-                    <strong>{s.name}</strong>
-                    <Badge
-                      label={
-                        s.status === 'up' ? '正常' : s.status === 'degraded' ? '降级' : '异常'
-                      }
-                      variant={
-                        s.status === 'up'
-                          ? 'success'
-                          : s.status === 'degraded'
-                            ? 'warning'
-                            : 'error'
-                      }
-                    />
-                  </VStack>
-                </Card>
-              ))}
+              {data.services.map((s) => {
+                const st = SERVICE_STATUS[s.status] ?? { label: s.status, tone: 'off' as Tone }
+                return (
+                  <Card key={s.name} padding={4}>
+                    <VStack gap={2}>
+                      <strong className="ff-wf-card-name">{s.name}</strong>
+                      <HStack gap={2} vAlign="center">
+                        <ToneBadge tone={st.tone}>{st.label}</ToneBadge>
+                      </HStack>
+                    </VStack>
+                  </Card>
+                )
+              })}
             </div>
           </VStack>
 
@@ -214,7 +261,7 @@ export function SystemPage() {
                         </Text>
                       ) : null}
                     </HStack>
-                    <strong style={{ fontSize: '1.35rem' }}>{m.value}</strong>
+                    <strong className="ff-metric-value">{m.value}</strong>
                     {m.percent != null ? (
                       <div className="ff-metric-bar" data-level={m.percent >= 80 ? 'high' : 'ok'}>
                         <span style={{ width: `${Math.min(100, m.percent)}%` }} />
@@ -230,15 +277,15 @@ export function SystemPage() {
             <Text type="label">算力设备</Text>
             <div className="ff-model-grid">
               {data.accelerators.map((a) => {
-                const st = ACCEL_STATUS[a.status]
+                const st = ACCEL_STATUS[a.status] ?? { label: a.status, tone: 'off' as Tone }
                 return (
                   <Card key={a.id} padding={4}>
                     <VStack gap={2}>
                       <HStack justify="between" vAlign="center">
-                        <strong>
+                        <strong className="ff-wf-card-name">
                           {a.kind} · {a.name}
                         </strong>
-                        <Badge label={st.label} variant={st.variant} />
+                        <ToneBadge tone={st.tone}>{st.label}</ToneBadge>
                       </HStack>
                       <Text type="supporting" color="secondary">
                         利用率 {a.util}
@@ -257,21 +304,32 @@ export function SystemPage() {
 
           <Card padding={4}>
             <VStack gap={3}>
-              <strong>系统告警</strong>
-              {data.alerts.map((a) => (
-                <HStack key={a.id} gap={2} vAlign="center">
-                  <Badge
-                    label={a.level === 'warn' ? '警告' : '信息'}
-                    variant={a.level === 'warn' ? 'warning' : 'neutral'}
-                  />
-                  <Text type="body">{a.body}</Text>
-                </HStack>
-              ))}
+              <strong className="ff-wf-card-name">系统告警</strong>
+              {data.alerts.length === 0 ? (
+                <Text type="supporting" color="secondary">
+                  暂无系统告警
+                </Text>
+              ) : (
+                data.alerts.map((a) => (
+                  <HStack key={a.id} gap={2} vAlign="center">
+                    <ToneBadge tone={a.level === 'warn' ? 'warn' : 'info'}>
+                      {a.level === 'warn' ? '警告' : '信息'}
+                    </ToneBadge>
+                    <Text type="body">{a.body}</Text>
+                  </HStack>
+                ))
+              )}
             </VStack>
           </Card>
         </>
       ) : (
-        <div className="ff-placeholder">{query.isLoading ? '加载中…' : '暂无数据'}</div>
+        <div className="ff-placeholder">
+          {query.isLoading
+            ? '加载中…'
+            : query.isError
+              ? '资源探针接口暂不可用；接入后这里会显示服务状态、资源占用与算力设备。'
+              : '暂无数据'}
+        </div>
       )}
     </PageLayout>
   )

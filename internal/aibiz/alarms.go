@@ -84,7 +84,9 @@ func (s *Service) onVisionDetection(ev vision.DetectionEvent) {
 		return
 	}
 
-	if path, err := writeAlarmEvidenceJPEG(row.ID, ev.JPEG); err == nil && path != "" {
+	// 证据 JPEG 在「确定要落库」之后才编码：告警有冷却（默认 30s），
+	// 检测热路径上逢框就编码 1080p JPEG（约 50ms/拍）纯属浪费。
+	if path, err := writeAlarmEvidenceJPEG(row.ID, ev.EvidenceJPEG()); err == nil && path != "" {
 		row.EvidenceIDsJSON = mustJSON([]string{path})
 		row.EvidenceNote = "已保存检出抓拍"
 		if err := s.store.saveAlarm(&row); err != nil {

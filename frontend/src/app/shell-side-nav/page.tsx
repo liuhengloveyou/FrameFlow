@@ -33,7 +33,6 @@ import {
 } from '@heroicons/react/24/outline'
 import type { IconType } from '@astryxdesign/core/Icon'
 import { useAuthStore } from '@/stores/auth-store'
-import { AccountMenu } from '@/features/account/account-menu'
 
 type NavItem = {
   label: string;
@@ -186,7 +185,7 @@ export function ShellSideNav({ children }: { children: ReactNode }) {
                 </a>
               )
             }
-            footer={<AccountMenu />}
+            footer={undefined}
           >
             <SideNavSection title="监控">
               <NavItems

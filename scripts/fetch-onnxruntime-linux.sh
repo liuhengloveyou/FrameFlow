@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${1:-amd64}"
-VER="1.26.0"
+VER="1.30.0"
 
 case "$ARCH" in
   amd64|x86_64)

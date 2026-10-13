@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { NumberInput } from '@astryxdesign/core/NumberInput'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
@@ -15,9 +14,21 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  ArrowsPointingOutIcon,
+  BellAlertIcon,
+  MapIcon,
+  MapPinIcon,
+  RectangleStackIcon,
+  SignalIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import { ToneBadge } from '@/components/tone-badge'
 import { SidePanel } from '@/components/side-panel'
 import { CameraStatusBadge } from '@/components/status-badge'
+import { MapBaseMap } from './map-base-map'
 import { listAlarms } from '@/apis/alarms-api'
 import { listCameras } from '@/apis/devices-api'
 import { listMapElements, nextMapElementId, saveMapElements } from '@/apis/map-api'
@@ -62,6 +73,12 @@ export function MapPage() {
   const [dirty, setDirty] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedCameraId, setSelectedCameraId] = useState<string | null>(null)
+  /** 右侧列视图：设备点位 / 告警热力 */
+  const [view, setView] = useState<'points' | 'heat'>('points')
+  const [pointQuery, setPointQuery] = useState('')
+  /** 内置示例底图：园区尚未接入真实地理底图，先用它撑起画布 */
+  const [showBaseMap, setShowBaseMap] = useState(true)
+  const shellRef = useRef<HTMLDivElement>(null)
 
   const mapQuery = useQuery({
     queryKey: ['map-elements'],
@@ -248,223 +265,417 @@ export function MapPage() {
   const shapes = layerElements.filter((e) => e.kind === 'building' || e.kind === 'road')
   const pins = layerElements.filter((e) => e.kind === 'camera')
 
+  /** 右侧列：按名称 / 区域 / 摄像头名过滤 */
+  const filteredPins = useMemo(() => {
+    const q = pointQuery.trim().toLowerCase()
+    if (!q) return pins
+    return pins.filter((el) => {
+      const cam = el.cameraId ? cameraById.get(el.cameraId) : null
+      return (
+        el.label.toLowerCase().includes(q) ||
+        (cam?.name ?? '').toLowerCase().includes(q) ||
+        (cam?.group ?? '').toLowerCase().includes(q)
+      )
+    })
+  }, [pins, pointQuery, cameraById])
+
   return (
     <PageLayout
       title="地图空间"
+      badge={`已上图 ${boundCameraIds.size} / ${cameras.length}`}
       contentPadding={3}
-      actions={
-        <HStack gap={2} vAlign="center" wrap="wrap">
-          <Badge
-            label={`在线 ${stats.online}/${stats.total}`}
-            variant="success"
-          />
-          <Badge
-            label={`楼栋 ${stats.buildings} · 道路 ${stats.roads}`}
-            variant="blue"
-          />
-          <Switch
-            label="编辑地图"
-            value={editMode}
-            onChange={(v) => {
-              setEditMode(v)
-              if (!v) {
-                setSelectedId(null)
-              }
-            }}
-          />
-          {editMode ? (
+      toolbar={
+        <PageToolbar
+          filters={
             <>
-              <Button
-                label="添加楼栋"
-                size="sm"
-                variant="secondary"
-                onClick={() => addElement('building')}
+              <TextInput
+                label="点位"
+                isLabelHidden
+                placeholder="搜索点位名称 / 区域"
+                value={pointQuery}
+                onChange={setPointQuery}
+                hasClear
               />
-              <Button
-                label="添加道路"
-                size="sm"
-                variant="secondary"
-                onClick={() => addElement('road')}
+              <SegmentedControl
+                label="地图层级"
+                value={layer}
+                onChange={(v) => changeLayer((v as MapLayer) || 'campus')}
+              >
+                <SegmentedControlItem value="campus" label="园区总览" />
+                <SegmentedControlItem value="building" label="一号楼" />
+                <SegmentedControlItem value="parking" label="停车场" />
+              </SegmentedControl>
+              <SegmentedControl
+                label="列视图"
+                value={view}
+                onChange={(v) => setView((v as 'points' | 'heat') || 'points')}
+              >
+                <SegmentedControlItem value="points" label="设备点位" />
+                <SegmentedControlItem value="heat" label="告警热力" />
+              </SegmentedControl>
+            </>
+          }
+          stats={
+            <InlineStatGroup>
+              <InlineStat
+                icon={<MapPinIcon />}
+                value={stats.total}
+                label="本层点位"
+                title="当前层级已布点的摄像头"
               />
-              <Button
-                label="添加摄像头"
-                size="sm"
-                variant="secondary"
-                isDisabled={unboundCameras.length === 0}
-                onClick={() => addElement('camera')}
+              <InlineStat
+                icon={<SignalIcon />}
+                value={stats.online}
+                label="在线"
+                tone="ok"
               />
-              <Button
-                label="保存"
-                size="sm"
-                variant="primary"
-                isDisabled={!dirty}
-                isLoading={saveMutation.isPending}
-                clickAction={async () => {
-                  await saveMutation.mutateAsync()
+              <InlineStat
+                icon={<BellAlertIcon />}
+                value={stats.alarming}
+                label="告警中"
+                tone="warn"
+              />
+              <InlineStat
+                icon={<RectangleStackIcon />}
+                value={unboundCameras.length}
+                label="未上图"
+                tone="teal"
+                title="尚未绑定到地图的摄像头"
+              />
+            </InlineStatGroup>
+          }
+          actions={
+            <>
+              <Switch
+                label="编辑地图"
+                value={editMode}
+                onChange={(v) => {
+                  setEditMode(v)
+                  if (!v) {
+                    setSelectedId(null)
+                  }
                 }}
               />
-              <Button
-                label="丢弃"
-                size="sm"
-                variant="ghost"
-                isDisabled={!dirty}
-                onClick={discardEdits}
-              />
+              {editMode ? (
+                <>
+                  <Button
+                    label="添加楼栋"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => addElement('building')}
+                  />
+                  <Button
+                    label="添加道路"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => addElement('road')}
+                  />
+                  <Button
+                    label="添加摄像头"
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={unboundCameras.length === 0}
+                    onClick={() => addElement('camera')}
+                  />
+                  <Button
+                    label="保存"
+                    size="sm"
+                    variant="primary"
+                    isDisabled={!dirty}
+                    isLoading={saveMutation.isPending}
+                    clickAction={async () => {
+                      await saveMutation.mutateAsync()
+                    }}
+                  />
+                  <Button
+                    label="丢弃"
+                    size="sm"
+                    variant="ghost"
+                    isDisabled={!dirty}
+                    onClick={discardEdits}
+                  />
+                </>
+              ) : null}
+              <button
+                type="button"
+                className="ff-topbar-iconbtn"
+                aria-label="全屏"
+                title="全屏"
+                onClick={() => {
+                  const el = shellRef.current
+                  if (!el) return
+                  if (document.fullscreenElement) {
+                    void document.exitFullscreen().catch(() => {})
+                  } else {
+                    void el.requestFullscreen?.().catch(() => {})
+                  }
+                }}
+              >
+                <ArrowsPointingOutIcon aria-hidden />
+              </button>
             </>
-          ) : null}
-          <Button
-            label="缩小"
-            size="sm"
-            variant="secondary"
-            onClick={() => setZoom((z) => Math.max(0.7, z - 0.15))}
-          />
-          <Button
-            label="放大"
-            size="sm"
-            variant="secondary"
-            onClick={() => setZoom((z) => Math.min(2.2, z + 0.15))}
-          />
-          <Button label="重置视图" size="sm" variant="ghost" onClick={resetView} />
-          <Button
-            label="刷新"
-            variant={editMode ? 'secondary' : 'primary'}
-            size="sm"
-            isLoading={mapQuery.isFetching || camerasQuery.isFetching}
-            clickAction={async () => {
-              if (dirty) {
-                toast({ body: '请先保存或丢弃编辑中的修改', type: 'error' })
-                return
-              }
-              await Promise.all([mapQuery.refetch(), camerasQuery.refetch()])
-            }}
-          />
-        </HStack>
-      }
-      toolbar={
-        <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
-          <SegmentedControl
-            label="地图层级"
-            value={layer}
-            onChange={(v) => changeLayer((v as MapLayer) || 'campus')}
-          >
-            <SegmentedControlItem value="campus" label="园区总览" />
-            <SegmentedControlItem value="building" label="一号楼" />
-            <SegmentedControlItem value="parking" label="停车场" />
-          </SegmentedControl>
-          <div className="ff-map-legend">
-            <span className="ff-map-legend-item" data-status="online">
-              在线 {stats.online}/{stats.total}
-            </span>
-            <span className="ff-map-legend-item" data-status="offline">
-              离线
-            </span>
-            <span className="ff-map-legend-item" data-status="alarm">
-              报警 {stats.alarming}
-            </span>
-            <span className="ff-map-legend-item" data-status="error">
-              异常
-            </span>
-            {editMode ? (
-              <Text type="supporting" color="secondary">
-                拖拽元素移动 · 点选后在侧栏编辑属性
-                {dirty ? ' · 未保存' : ''}
-              </Text>
-            ) : null}
-          </div>
-        </HStack>
+          }
+        />
       }
     >
-      <div
-        className="ff-map-canvas"
-        data-layer={layer}
-        data-edit={editMode ? 'true' : undefined}
-        onWheel={(e) => {
-          e.preventDefault()
-          setZoom((z) => Math.min(2.2, Math.max(0.7, z + (e.deltaY > 0 ? -0.08 : 0.08))))
-        }}
-        onMouseDown={(e) => {
-          if (dragElRef.current) return
-          if ((e.target as HTMLElement).closest('.ff-map-pin, .ff-map-shape')) return
-          if (editMode) {
-            setSelectedId(null)
-            setSelectedCameraId(null)
-          }
-          dragPanRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
-        }}
-        onMouseMove={onCanvasMouseMove}
-        onMouseUp={endDrag}
-        onMouseLeave={endDrag}
-      >
-        <div
-          ref={worldRef}
-          className="ff-map-world"
-          style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          }}
-        >
-          <div className="ff-map-layer" aria-hidden />
-          <div className="ff-map-label ff-map-label-n">{LAYER_LABEL[layer]}</div>
+      <div className="ff-map-shell" ref={shellRef}>
+        <div className="ff-map-main">
+          <div
+            className="ff-map-canvas"
+            data-layer={layer}
+            data-edit={editMode ? 'true' : undefined}
+            onWheel={(e) => {
+              e.preventDefault()
+              setZoom((z) => Math.min(2.2, Math.max(0.7, z + (e.deltaY > 0 ? -0.08 : 0.08))))
+            }}
+            onMouseDown={(e) => {
+              if (dragElRef.current) return
+              if ((e.target as HTMLElement).closest('.ff-map-pin, .ff-map-shape')) return
+              if (editMode) {
+                setSelectedId(null)
+                setSelectedCameraId(null)
+              }
+              dragPanRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
+            }}
+            onMouseMove={onCanvasMouseMove}
+            onMouseUp={endDrag}
+            onMouseLeave={endDrag}
+          >
+            <div
+              ref={worldRef}
+              className="ff-map-world"
+              data-view={view}
+              data-basemap={showBaseMap ? 'true' : undefined}
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              }}
+            >
+              <div className="ff-map-layer" aria-hidden />
+              {showBaseMap ? <MapBaseMap layer={layer} /> : null}
+              <div className="ff-map-label ff-map-label-n">{LAYER_LABEL[layer]}</div>
 
-          {shapes.map((el) => {
-            const active = selectedId === el.id
-            return (
-              <button
-                key={el.id}
-                type="button"
-                className="ff-map-shape"
-                data-kind={el.kind}
-                data-active={active ? 'true' : undefined}
-                data-editable={editMode ? 'true' : undefined}
-                style={{
-                  left: `${el.x}%`,
-                  top: `${el.y}%`,
-                  width: `${el.width ?? 10}%`,
-                  height: `${el.height ?? 10}%`,
-                }}
-                onMouseDown={(e) => beginElementDrag(e, el)}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setSelectedId(el.id)
-                  setSelectedCameraId(null)
-                }}
-              >
-                {el.label}
-              </button>
-            )
-          })}
+              {shapes.map((el) => {
+                const active = selectedId === el.id
+                return (
+                  <button
+                    key={el.id}
+                    type="button"
+                    className="ff-map-shape"
+                    data-kind={el.kind}
+                    data-active={active ? 'true' : undefined}
+                    data-editable={editMode ? 'true' : undefined}
+                    style={{
+                      left: `${el.x}%`,
+                      top: `${el.y}%`,
+                      width: `${el.width ?? 10}%`,
+                      height: `${el.height ?? 10}%`,
+                    }}
+                    onMouseDown={(e) => beginElementDrag(e, el)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedId(el.id)
+                      setSelectedCameraId(null)
+                    }}
+                  >
+                    {el.label}
+                  </button>
+                )
+              })}
 
-          {pins.map((el) => {
-            const camera = el.cameraId ? cameraById.get(el.cameraId) : undefined
-            const active = selectedId === el.id || selectedCameraId === el.cameraId
-            const alarming = Boolean(el.cameraId && alarmingCameraIds.has(el.cameraId))
-            return (
+              {pins.map((el) => {
+                const camera = el.cameraId ? cameraById.get(el.cameraId) : undefined
+                const active = selectedId === el.id || selectedCameraId === el.cameraId
+                const alarming = Boolean(el.cameraId && alarmingCameraIds.has(el.cameraId))
+                return (
+                  <button
+                    key={el.id}
+                    type="button"
+                    className="ff-map-pin"
+                    data-status={camera?.status ?? 'offline'}
+                    data-alarm={alarming ? 'true' : undefined}
+                    data-active={active ? 'true' : undefined}
+                    data-editable={editMode ? 'true' : undefined}
+                    data-dim={view === 'heat' && !alarming ? 'true' : undefined}
+                    style={{ left: `${el.x}%`, top: `${el.y}%` }}
+                    onMouseDown={(e) => beginElementDrag(e, el)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedId(el.id)
+                      if (!editMode && el.cameraId) setSelectedCameraId(el.cameraId)
+                    }}
+                    title={alarming ? `${el.label} · 报警中` : el.label}
+                  >
+                    <span className="ff-map-pin-dot" />
+                    <span className="ff-map-pin-name">{el.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* 图例浮层 */}
+            <div className="ff-map-legend-float">
+              <span className="ff-map-legend-float-title">
+                {view === 'heat' ? '告警热力' : '点位图例'}
+              </span>
+              <span className="ff-map-legend-row">
+                <i style={{ background: 'var(--ff-ok)' }} />
+                在线 {stats.online}/{stats.total}
+              </span>
+              <span className="ff-map-legend-row">
+                <i style={{ background: 'var(--ff-warn)' }} />
+                告警 {stats.alarming}
+              </span>
+              <span className="ff-map-legend-row">
+                <i style={{ background: 'var(--ff-off)' }} />
+                离线
+              </span>
+              {editMode ? (
+                <span className="ff-map-legend-row" style={{ color: 'var(--ff-ink-3)' }}>
+                  编辑中 · 拖拽移动
+                </span>
+              ) : null}
+            </div>
+
+            {/* 缩放控件 */}
+            <div className="ff-map-zoom-ctl">
               <button
-                key={el.id}
                 type="button"
-                className="ff-map-pin"
-                data-status={camera?.status ?? 'offline'}
-                data-alarm={alarming ? 'true' : undefined}
-                data-active={active ? 'true' : undefined}
-                data-editable={editMode ? 'true' : undefined}
-                style={{ left: `${el.x}%`, top: `${el.y}%` }}
-                onMouseDown={(e) => beginElementDrag(e, el)}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setSelectedId(el.id)
-                  if (!editMode && el.cameraId) setSelectedCameraId(el.cameraId)
-                }}
-                title={alarming ? `${el.label} · 报警中` : el.label}
+                aria-label="放大"
+                title="放大"
+                onClick={() => setZoom((z) => Math.min(2.2, z + 0.15))}
               >
-                <span className="ff-map-pin-dot" />
-                <span className="ff-map-pin-name">{el.label}</span>
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
               </button>
-            )
-          })}
+              <button
+                type="button"
+                aria-label="缩小"
+                title="缩小"
+                onClick={() => setZoom((z) => Math.max(0.7, z - 0.15))}
+              >
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path d="M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                aria-label="重置视图"
+                title="重置视图"
+                onClick={resetView}
+              >
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M2.5 8a5.5 5.5 0 1 1 1.6 3.9M2.5 8V4.5M2.5 8H6"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* 指北针：与图层无关的固定装饰 */}
+            <div className="ff-map-compass" aria-hidden>
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M12 3.2 15.4 12.6 12 11.1 8.6 12.6z" fill="var(--ff-danger)" />
+                <path d="M12 20.8 8.6 11.4 12 12.9 15.4 11.4z" fill="#cdd6cb" />
+              </svg>
+            </div>
+
+            {/* 示例底图开关：明确说明画布用的是内置演示底图 */}
+            <button
+              type="button"
+              className="ff-map-basemap-chip"
+              data-on={showBaseMap ? 'true' : undefined}
+              aria-pressed={showBaseMap}
+              title={
+                showBaseMap
+                  ? '当前画布为内置示例底图（非真实地理数据），点击可隐藏'
+                  : '显示内置示例底图（非真实地理数据）'
+              }
+              onClick={() => setShowBaseMap((v) => !v)}
+            >
+              <MapIcon aria-hidden />
+              {showBaseMap ? '示例底图' : '显示示例底图'}
+            </button>
+          </div>
         </div>
-        <div className="ff-map-zoom-badge">
-          {LAYER_LABEL[layer]} · {Math.round(zoom * 100)}%
-          {editMode ? ' · 编辑中' : ''}
-        </div>
+
+        {/* 右侧：设备点位列表面板 */}
+        <aside className="ff-map-side">
+          <div className="ff-map-side-head">
+            <span className="ff-map-side-title">
+              <MapPinIcon aria-hidden />
+              设备点位
+            </span>
+            <span className="ff-map-side-count">{filteredPins.length}</span>
+            {pointQuery ? (
+              <button
+                type="button"
+                className="ff-search-chip"
+                style={{ marginLeft: 'auto' }}
+                onClick={() => setPointQuery('')}
+              >
+                全部
+              </button>
+            ) : null}
+          </div>
+          <div className="ff-map-side-list">
+            {filteredPins.map((el) => {
+              const camera = el.cameraId ? cameraById.get(el.cameraId) : undefined
+              const alarming = Boolean(el.cameraId && alarmingCameraIds.has(el.cameraId))
+              const active =
+                selectedId === el.id || selectedCameraId === el.cameraId
+              const statusText = alarming
+                ? '告警中'
+                : camera?.status === 'online' || camera?.status === 'running'
+                  ? '在线'
+                  : camera?.status === 'error'
+                    ? '异常'
+                    : '离线'
+              return (
+                <button
+                  key={el.id}
+                  type="button"
+                  className="ff-map-point"
+                  data-active={active ? 'true' : undefined}
+                  data-alarm={alarming ? 'true' : undefined}
+                  onClick={() => {
+                    setSelectedId(el.id)
+                    if (!editMode && el.cameraId) setSelectedCameraId(el.cameraId)
+                  }}
+                >
+                  <span
+                    className="ff-map-point-dot"
+                    data-status={camera?.status ?? 'offline'}
+                    data-alarm={alarming ? 'true' : undefined}
+                  />
+                  <span className="ff-map-point-body">
+                    <span className="ff-map-point-name">{el.label}</span>
+                    <span className="ff-map-point-meta">
+                      {camera?.group || '未绑定区域'} · {statusText}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+            {!filteredPins.length ? (
+              pins.length || pointQuery ? (
+                <p className="ff-pb-empty">无匹配点位</p>
+              ) : (
+                <div className="ff-map-side-empty">
+                  <MapPinIcon aria-hidden />
+                  <p>本层还没有点位</p>
+                  <span>
+                    打开工具条上的「编辑地图」，用「添加摄像头」把设备拖到示例底图上即可。
+                  </span>
+                </div>
+              )
+            ) : null}
+          </div>
+        </aside>
       </div>
 
       <SidePanel
@@ -528,7 +739,7 @@ function ElementEditor({
 
   return (
     <VStack gap={3}>
-      <Badge label={KIND_LABEL[element.kind]} variant="neutral" />
+      <ToneBadge tone="off">{KIND_LABEL[element.kind]}</ToneBadge>
       <TextInput
         label="名称"
         value={element.label}

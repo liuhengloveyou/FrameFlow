@@ -23,4 +23,9 @@ type VisionBBox struct {
 	Score float64 `json:"score,omitempty"`
 	// Text 画在框外右下角下方；空时前端可用 Label 兜底。
 	Text string `json:"text,omitempty"`
+	// TrackID 航迹 ID（BoxTracker 分配，同一目标跨帧稳定）。0 = 未跟踪（透传的原始检测）。
+	// 前端据此做稳定 key 与插值，避免框逐帧重建造成闪烁。
+	TrackID uint64 `json:"track_id,omitempty"`
+	// Miss 连续丢失拍数（>0 表示该框是航迹保持中的外推位置，非本拍真实检测）。
+	Miss int `json:"miss,omitempty"`
 }

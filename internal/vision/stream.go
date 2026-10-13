@@ -135,6 +135,7 @@ func visionStreamLoop(ctx context.Context, streamKey string) {
 		if ivCons != nil && ivStream != nil {
 			ivStream.RemoveConsumer(ivCons)
 		}
+		ResetStreamTracker(streamKey)
 		log.Info().Str("stream", streamKey).Msg("[vision] stream loop exit")
 	}()
 
@@ -247,7 +248,10 @@ type visionCodecSource interface {
 }
 
 func visionPublishDetected(streamKey string, src visionCodecSource, boxes []VisionBBox, frameText string,
-	keyframeUnixMS int64, durGet, durPull, durJpeg, durDet time.Duration, frameBytes int) error {
+	keyframeUnixMS int64, durGet, durPull, durDecode, durDet time.Duration, frameBytes int) error {
+	// 航迹跟踪：逐帧抖动 / 偶发空帧 → 有身份的连续航迹（含丢失保持中的外推框）。
+	// 只影响预览 payload；告警用的 DetectionEvent 仍是原始检测（上面已发）。
+	tracked := trackBoxesForStream(streamKey, boxes)
 	payload := VisionFramePayload{
 		Type:           streams.VisionDataChannelLabel,
 		V:              1,
@@ -256,7 +260,7 @@ func visionPublishDetected(streamKey string, src visionCodecSource, boxes []Visi
 		UnixMS:         time.Now().UnixMilli(),
 		KeyframeUnixMS: keyframeUnixMS,
 		Text:           frameText,
-		Boxes:          boxes,
+		Boxes:          tracked,
 	}
 	if ts, ok := src.LastRTP(); ok {
 		v := int64(ts)
@@ -272,16 +276,16 @@ func visionPublishDetected(streamKey string, src visionCodecSource, boxes []Visi
 	durPub := time.Since(t)
 
 	if log.Debug().Enabled() {
-		sum := durGet + durPull + durJpeg + durDet + durPub
+		sum := durGet + durPull + durDecode + durDet + durPub
 		log.Debug().
 			Str("stream", streamKey).
 			Dur("get", durGet).
 			Dur("kf", durPull).
-			Dur("jpeg", durJpeg).
+			Dur("decode", durDecode).
 			Dur("det", durDet).
 			Dur("pub", durPub).
 			Dur("sum", sum).
-			Int("jpeg_bytes", frameBytes).
+			Int("frame_bytes", frameBytes).
 			Msg("[vision] stages")
 	}
 	if len(boxes) > 0 {
@@ -301,13 +305,17 @@ func visionPublishDetected(streamKey string, src visionCodecSource, boxes []Visi
 	return nil
 }
 
-func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGet, durPull time.Duration, lav *libavVisionSession) error {
+// visionFinishSample 处理一份样本：解码 → 检测 → 发布。
+// incremental=true 表示样本是「增量 AU」（自上次推送以来新增的码流），必须用持久解码器；
+// false 表示自包含样本（含参数集 + 自 IDR 起的完整片段），解码器每次重置。
+func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGet, durPull time.Duration, lav *libavVisionSession, incremental bool) error {
 	t0 := time.Now()
 	logAIPipeline(streamKey, "0_sample", false, map[string]any{
-		"codec":      src.CodecName(),
-		"sample_len": len(b),
-		"dur_get":    durGet,
-		"dur_pull":   durPull,
+		"codec":       src.CodecName(),
+		"sample_len":  len(b),
+		"incremental": incremental,
+		"dur_get":     durGet,
+		"dur_pull":    durPull,
 	})
 	switch src.CodecName() {
 	case core.CodecH264, core.CodecH265:
@@ -318,8 +326,21 @@ func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGe
 		if lav == nil {
 			return fferrors.ErrVisionLibavRequired
 		}
-		rgb, w, h, ok, errL := lav.tryDecodeAnnexB(src.CodecName(), b)
+		var (
+			rgb  []byte
+			w, h int
+			ok   bool
+			errL error
+		)
+		if incremental {
+			rgb, w, h, ok, errL = lav.tryDecodeStream(src.CodecName(), b, true)
+		} else {
+			rgb, w, h, ok, errL = lav.tryDecodeAnnexB(src.CodecName(), b)
+		}
 		if errL != nil {
+			// 持久解码器出错后参考帧状态不可信：立即重置，并要求采样端丢弃未送增量、
+			// 从下一个 IDR 重新对齐（调用方据 ErrVisionLibavDecode 触发 RequestResync）。
+			lav.reset()
 			logAIPipeline(streamKey, "0_decode_err", true, map[string]any{"err": errL.Error(), "codec": src.CodecName()})
 			log.Warn().Err(errL).Str("stream", streamKey).Str("codec", src.CodecName()).Msg("[vision] libav decode")
 			return fferrors.ErrVisionLibavDecode
@@ -332,7 +353,8 @@ func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGe
 		logAIPipeline(streamKey, "0_decode_ok", false, map[string]any{
 			"w": w, "h": h, "rgb_bytes": len(rgb), "dur_decode": time.Since(t0),
 		})
-		durJpeg := time.Since(t0)
+		dumpVisionFrame(rgb, w, h)
+		durDecode := time.Since(t0)
 		keyframeUnixMS := time.Now().UnixMilli()
 		t1 := time.Now()
 		boxes, frameText, err := boxesFromKeyframeRGBStream(streamKey, rgb, w, h)
@@ -348,19 +370,19 @@ func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGe
 		}
 		if len(boxes) > 0 {
 			pol, _, _ := LookupStreamAIPolicy(streamKey)
-			var jpegBytes []byte
-			if img, errEnc := rgbToJPEG(rgb, w, h); errEnc == nil {
-				jpegBytes = img
-			}
 			logAIPipeline(streamKey, "4_notify", true, map[string]any{
 				"boxes":   len(boxes),
 				"text":    frameText,
 				"bind_id": pol.BindID,
 			})
+			// 抓拍 JPEG 不在这里编码：1080p 编码约 50ms（占单拍 12%），而告警有冷却，
+			// 绝大多数拍不会落库。改由告警落库前按需编码（见 DetectionEvent.EvidenceJPEG）。
 			NotifyDetection(DetectionEvent{
 				StreamKey: streamKey,
 				Boxes:     boxes,
-				JPEG:      jpegBytes,
+				RGB:       rgb,
+				Width:     w,
+				Height:    h,
 				Policy:    pol,
 			})
 		} else {
@@ -369,14 +391,14 @@ func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGe
 				"dur_det": durDet,
 			})
 		}
-		return visionPublishDetected(streamKey, src, boxes, frameText, keyframeUnixMS, durGet, durPull, durJpeg, durDet, len(rgb))
+		return visionPublishDetected(streamKey, src, boxes, frameText, keyframeUnixMS, durGet, durPull, durDecode, durDet, len(rgb))
 	case core.CodecJPEG:
 		b = mjpeg.FixJPEG(b)
 	default:
 		log.Warn().Str("stream", streamKey).Str("codec", src.CodecName()).Msg("[vision] unsupported codec")
 		return fferrors.ErrVisionCodec
 	}
-	durJpeg := time.Since(t0)
+	durDecode := time.Since(t0)
 
 	keyframeUnixMS := time.Now().UnixMilli()
 	t := time.Now()
@@ -406,7 +428,7 @@ func visionFinishSample(streamKey string, src visionCodecSource, b []byte, durGe
 		})
 	}
 
-	return visionPublishDetected(streamKey, src, boxes, frameText, keyframeUnixMS, durGet, durPull, durJpeg, durDet, len(b))
+	return visionPublishDetected(streamKey, src, boxes, frameText, keyframeUnixMS, durGet, durPull, durDecode, durDet, len(b))
 }
 
 func processAndPublishKeyframe(streamKey string, lav *libavVisionSession) error {
@@ -440,7 +462,7 @@ func processAndPublishKeyframe(streamKey string, lav *libavVisionSession) error 
 		return fferrors.ErrVisionNoKeyframe
 	}
 
-	return visionFinishSample(streamKey, kfCons, b, durGet, durKf, lav)
+	return visionFinishSample(streamKey, kfCons, b, durGet, durKf, lav, false)
 }
 
 func processAndPublishInterval(streamKey string, ctx context.Context, ivCons **magic.IntervalSampleConsumer, ivStream **streams.Stream, ivSample *time.Duration, ivMaxGOP *int, interval time.Duration, maxGOPBytes int, lav *libavVisionSession) error {
@@ -464,7 +486,9 @@ func processAndPublishInterval(streamKey string, ctx context.Context, ivCons **m
 			*ivCons = nil
 			*ivStream = nil
 		}
-		c := magic.NewIntervalSampleConsumer(interval, maxGOPBytes)
+		// 增量采样：每拍只送「上次之后新到的 AU」，配合持久解码器，解码成本 ∝ 节拍内帧数
+		// （旧的自包含采样每拍重放整个 GOP，1080p/5s GOP 约 208ms，是实时性差的主因）。
+		c := magic.NewIncrementalSampleConsumer(interval, maxGOPBytes)
 		if err := stream.AddConsumer(c); err != nil {
 			log.Warn().Err(err).Str("stream", streamKey).Msg("[vision] add interval consumer")
 			return err
@@ -500,6 +524,12 @@ func processAndPublishInterval(streamKey string, ctx context.Context, ivCons **m
 	if len(b) == 0 {
 		return fferrors.ErrVisionNoKeyframe
 	}
+	dumpVisionSample(b)
 
-	return visionFinishSample(streamKey, *ivCons, b, durGet, durPull, lav)
+	err = visionFinishSample(streamKey, *ivCons, b, durGet, durPull, lav, true)
+	if errors.Is(err, fferrors.ErrVisionLibavDecode) {
+		// 解码器已重置：丢弃未送出的增量，等下一个 IDR 建立新的自包含起点，之后自动恢复增量。
+		(*ivCons).RequestResync()
+	}
+	return err
 }

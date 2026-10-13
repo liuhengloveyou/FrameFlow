@@ -1,19 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core/SegmentedControl'
 import { Switch } from '@astryxdesign/core/Switch'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Text } from '@astryxdesign/core/Text'
-import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
+import {
+  ArrowsPointingOutIcon,
+  BellAlertIcon,
+  ClipboardDocumentCheckIcon,
+  CpuChipIcon,
+  Squares2X2Icon,
+  VideoCameraIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
 import { SidePanel } from '@/components/side-panel'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import {
+  GridPager,
+  LayoutSwitcher,
+  type ScreenLayout,
+} from '@/components/layout-switcher'
 import { CameraStatusBadge } from '@/components/status-badge'
 import { listCameras } from '@/apis/devices-api'
+import { listAlarms } from '@/apis/alarms-api'
+import { listReviewEvents } from '@/apis/review-api'
 import { takePreviewSeed } from '@/lib/preview-seed'
 import {
   encodeSlotKey,
@@ -25,15 +37,13 @@ import type { Camera } from '@/types/api'
 import { MonitorDetail } from './monitor-detail'
 import { PreviewTile } from './preview-tile'
 
-type Layout = '1' | '4' | '9'
-
-function slotCount(layout: Layout) {
-  return layout === '1' ? 1 : layout === '4' ? 4 : 9
+function slotCount(layout: ScreenLayout) {
+  return layout === '1' ? 1 : layout === '4' ? 4 : layout === '9' ? 9 : 16
 }
 
-/** 实时监控默认九宫格；摄像头专属预览按路数选布局 */
-function layoutForStreamCount(n: number, cameraOnly = false): Layout {
-  if (!cameraOnly) return '9'
+/** 实时监控默认 2x2；摄像头专属预览按路数选布局 */
+function layoutForStreamCount(n: number, cameraOnly = false): ScreenLayout {
+  if (!cameraOnly) return '4'
   if (n <= 1) return '1'
   if (n <= 4) return '4'
   return '9'
@@ -68,42 +78,43 @@ function collectStreamKeys(cameras: Camera[]): string[] {
   return keys
 }
 
-/** 切换布局时尽量保留已占槽位顺序，不足补空，超出截断 */
-function resizeSlots(
-  prev: Array<string | null>,
-  next: Layout,
-  preferredFirst?: string | null,
-) {
-  const count = slotCount(next)
-  const ordered: string[] = []
-  const seen = new Set<string>()
-  if (preferredFirst) {
-    ordered.push(preferredFirst)
-    seen.add(preferredFirst)
+/** 可分析通道数：设备通道之和（无通道表按 1 路计） */
+function countAiChannels(cameras: Camera[]) {
+  let n = 0
+  for (const c of cameras) {
+    if (c.channels?.length) n += c.channels.length
+    else n += 1
   }
-  for (const id of prev) {
-    if (!id || seen.has(id)) continue
-    ordered.push(id)
-    seen.add(id)
-  }
-  return Array.from({ length: count }, (_, i) => ordered[i] ?? null)
+  return n
 }
 
-function fillSlots(keys: string[], layout: Layout): Array<string | null> {
+/** 按页填充槽位：第 page 页的 count 路，不足补 null */
+function fillFromPage(
+  keys: string[],
+  layout: ScreenLayout,
+  page: number,
+): Array<string | null> {
   const count = slotCount(layout)
-  return Array.from({ length: count }, (_, i) => keys[i] ?? null)
+  const start = (page - 1) * count
+  return Array.from({ length: count }, (_, i) => keys[start + i] ?? null)
 }
 
 export function PreviewPage() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const gridRef = useRef<HTMLDivElement>(null)
   const autoFilledRef = useRef(false)
+  const orderedKeysRef = useRef<string[]>([])
 
-  const [layout, setLayout] = useState<Layout>('9')
+  const [layout, setLayout] = useState<ScreenLayout>('4')
+  const [page, setPage] = useState(1)
   const [slotIds, setSlotIds] = useState<Array<string | null>>([])
   const [selectedSlot, setSelectedSlot] = useState(0)
   const [pickSlot, setPickSlot] = useState<number | null>(null)
   const [pickQuery, setPickQuery] = useState('')
   const [detail, setDetail] = useState<PreviewSlotSource | null>(null)
   const [showAiOverlay, setShowAiOverlay] = useState(true)
+  const [gridFullscreen, setGridFullscreen] = useState(false)
 
   const [seed] = useState(() => takePreviewSeed())
   const seedKey = seed
@@ -129,12 +140,42 @@ export function PreviewPage() {
   })
 
   const cameras = camerasQuery.data?.items ?? []
+  const totalCameras = camerasQuery.data?.total ?? cameras.length
   const byId = useMemo(
     () => new Map(cameras.map((c) => [String(c.id), c])),
     [cameras],
   )
 
   const allStreamKeys = useMemo(() => collectStreamKeys(cameras), [cameras])
+
+  /** 指标：在线设备 / 实时告警 / 今日识别事件 / AI 分析通道 */
+  const onlineCameras = useMemo(
+    () =>
+      cameras.filter((c) => c.status === 'online' || c.status === 'running')
+        .length,
+    [cameras],
+  )
+  const aiChannels = useMemo(() => countAiChannels(cameras), [cameras])
+
+  const alarmsCountQuery = useQuery({
+    queryKey: ['open-alarms-count'],
+    queryFn: () => listAlarms({ status: 'open', pageSize: 1 }),
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+
+  const todayEventsQuery = useQuery({
+    queryKey: ['review-events', { forMonitorToday: true }],
+    queryFn: () => {
+      const start = new Date()
+      start.setHours(0, 0, 0, 0)
+      return listReviewEvents({
+        from: start.toISOString(),
+        pageSize: 1,
+      })
+    },
+    staleTime: 30_000,
+  })
 
   const pickCameras = useMemo(() => {
     const q = pickQuery.trim().toLowerCase()
@@ -152,6 +193,7 @@ export function PreviewPage() {
     )
   }, [cameras, pickQuery])
 
+  // 首屏：按种子排序流，落第 1 页
   useEffect(() => {
     if (autoFilledRef.current) return
     if (!camerasQuery.isSuccess) return
@@ -165,11 +207,13 @@ export function PreviewPage() {
     } else {
       ordered = allStreamKeys
     }
+    orderedKeysRef.current = ordered
 
     const nextLayout = layoutForStreamCount(ordered.length, seedCameraOnly)
     autoFilledRef.current = true
     setLayout(nextLayout)
-    setSlotIds(fillSlots(ordered, nextLayout))
+    setPage(1)
+    setSlotIds(fillFromPage(ordered, nextLayout, 1))
     setSelectedSlot(0)
   }, [
     camerasQuery.isSuccess,
@@ -180,6 +224,7 @@ export function PreviewPage() {
     byId,
   ])
 
+  // 种子直达详情（从地图/设备页跳入）
   useEffect(() => {
     if (detailOpenedRef.current) return
     if (!seedOpenDetail || !seedKey) return
@@ -206,22 +251,37 @@ export function PreviewPage() {
     byId,
   ])
 
+  const pageCount = Math.max(
+    1,
+    Math.ceil((orderedKeysRef.current.length || allStreamKeys.length) / slotCount(layout)),
+  )
+
+  // 数据变化导致页数变小时，夹回有效页
   useEffect(() => {
     if (!autoFilledRef.current) return
-    setSlotIds((prev) => {
-      if (prev.length === slotCount(layout)) return prev
-      return resizeSlots(prev, layout, null)
-    })
-  }, [layout])
+    if (page > pageCount) {
+      const next = pageCount
+      setPage(next)
+      setSlotIds(fillFromPage(orderedKeysRef.current, layout, next))
+    }
+  }, [page, pageCount, layout])
 
   const detailCamera = detail ? (byId.get(detail.cameraId) ?? null) : null
 
-  function changeLayout(next: Layout) {
+  function changeLayout(next: ScreenLayout) {
     if (next === layout) return
     autoFilledRef.current = true
-    const focusId = slotIds[selectedSlot] ?? seedKey ?? null
     setLayout(next)
-    setSlotIds((prev) => resizeSlots(prev, next, focusId))
+    setPage(1)
+    setSlotIds(fillFromPage(orderedKeysRef.current, next, 1))
+    setSelectedSlot(0)
+  }
+
+  function gotoPage(next: number) {
+    const clamped = Math.min(Math.max(1, next), pageCount)
+    if (clamped === page) return
+    setPage(clamped)
+    setSlotIds(fillFromPage(orderedKeysRef.current, layout, clamped))
     setSelectedSlot(0)
   }
 
@@ -245,31 +305,102 @@ export function PreviewPage() {
     setDetail(src)
   }
 
+  // 宫格全屏（浏览器原生）
+  useEffect(() => {
+    const onFsChange = () => {
+      const el = gridRef.current
+      setGridFullscreen(Boolean(el && document.fullscreenElement === el))
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
+  function toggleGridFullscreen() {
+    const el = gridRef.current
+    if (!el) return
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {})
+    } else {
+      void el.requestFullscreen?.().catch(() => {
+        // 浏览器拒绝全屏时退回单路大图（打开当前选中槽详情）
+        const key = slotIds[selectedSlot]
+        const src = key ? parseSlotKey(key) : null
+        if (src && byId.get(src.cameraId)) openDetail(src)
+      })
+    }
+  }
+
   return (
-    <PageLayout
-      title="实时监控"
-      contentPadding={2}
-      actions={
-        <HStack gap={3} vAlign="center" wrap="wrap">
+    <PageLayout title="实时监控" badge="全部设备" contentPadding={2}>
+      <div className="ff-screen-bar">
+        <span className="ff-screen-bar-label">
+          <Squares2X2Icon aria-hidden />
+          画面布局
+        </span>
+        <LayoutSwitcher value={layout} onChange={changeLayout} />
+        <InlineStatGroup>
+          <InlineStat
+            icon={<VideoCameraIcon />}
+            value={onlineCameras}
+            unit={`/ ${totalCameras}`}
+            label="在线设备"
+            tone="ok"
+            title="查看设备管理"
+            onClick={() => void navigate({ to: '/devices' })}
+          />
+          <InlineStat
+            icon={<BellAlertIcon />}
+            value={alarmsCountQuery.data?.total ?? 0}
+            label="实时告警"
+            tone="warn"
+            title="查看报警记录"
+            onClick={() => void navigate({ to: '/alarms' })}
+          />
+          <InlineStat
+            icon={<ClipboardDocumentCheckIcon />}
+            value={todayEventsQuery.data?.total ?? 0}
+            label="今日识别事件"
+            title="前往事件核查"
+            onClick={() => void navigate({ to: '/review' })}
+          />
+          <InlineStat
+            icon={<CpuChipIcon />}
+            value={aiChannels}
+            label="AI 分析通道"
+            tone="teal"
+            title="前往算法接入"
+            onClick={() => void navigate({ to: '/algorithms' })}
+          />
+        </InlineStatGroup>
+        <div className="ff-screen-bar-right">
           <Switch
             label="AI 叠框"
             value={showAiOverlay}
             onChange={setShowAiOverlay}
           />
-          <SegmentedControl
-            label="预览布局"
-            size="sm"
-            value={layout}
-            onChange={(v) => changeLayout((v as Layout) || '9')}
+          <GridPager
+            page={page}
+            pageCount={pageCount}
+            onChange={gotoPage}
+          />
+          <button
+            type="button"
+            className="ff-topbar-iconbtn"
+            aria-label="全屏"
+            title="全屏"
+            onClick={toggleGridFullscreen}
           >
-            <SegmentedControlItem value="1" label="1 路" />
-            <SegmentedControlItem value="4" label="4 路" />
-            <SegmentedControlItem value="9" label="9 路" />
-          </SegmentedControl>
-        </HStack>
-      }
-    >
-      <div className="ff-preview-grid" data-layout={layout}>
+            <ArrowsPointingOutIcon aria-hidden />
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={gridRef}
+        className="ff-preview-grid"
+        data-layout={layout}
+        data-fullscreen={gridFullscreen ? 'true' : undefined}
+      >
         {slotIds.map((key, index) => {
           const src = key ? parseSlotKey(key) : null
           const camera = src ? (byId.get(src.cameraId) ?? null) : null
@@ -283,7 +414,7 @@ export function PreviewPage() {
               muted
               selected={index === selectedSlot}
               showAiOverlay={showAiOverlay}
-              frameEpoch={0}
+              frameEpoch={page}
               suspended={detail != null}
               onSelect={() => {
                 setSelectedSlot(index)
@@ -405,6 +536,7 @@ export function PreviewPage() {
           onClose={() => {
             setDetail(null)
             setDetailBoot(null)
+            void queryClient.invalidateQueries({ queryKey: ['cameras'] })
           }}
         />
       ) : null}

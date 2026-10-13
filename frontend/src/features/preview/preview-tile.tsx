@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { Text } from '@astryxdesign/core/Text'
+import { useToast } from '@astryxdesign/core/Toast'
+import {
+  ArrowsPointingOutIcon,
+  VideoCameraSlashIcon,
+} from '@heroicons/react/24/outline'
 import { resolveAiChannelId } from '@/lib/ai-stream'
 import { Go2rtcPlayer } from '@/lib/go2rtc/go2rtc-player'
 import {
@@ -13,11 +19,21 @@ import {
   isGbDeviceNotReady,
 } from '@/lib/stream-error'
 import { parseVisionPayload, type VisionBox } from '@/lib/vision-types'
+import { startCamera } from '@/apis/devices-api'
 import type { Camera, CameraStatus } from '@/types/api'
 import { DetectionOverlay } from './detection-overlay'
 
 type StreamMode = 'webrtc' | 'normal'
 type PlayState = 'connecting' | 'playing' | 'paused' | 'offline' | 'error'
+
+/** 最后在线时间：本地墙钟 HH:MM */
+function formatLastSeen(iso?: string): string {
+  if (!iso?.trim()) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 /** 播放态 + 设备在线态合并为一个角标文案 */
 function mergedStatusLabel(
@@ -150,10 +166,31 @@ function PreviewTilePlayer({
   onOpenDetail: () => void
 }) {
   const navigate = useNavigate()
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const [reconnecting, setReconnecting] = useState(false)
   const deviceOffline =
     camera.status === 'offline' ||
     camera.status === 'stopped' ||
     camera.status === 'error'
+
+  const reconnect = async (e: MouseEvent) => {
+    e.stopPropagation()
+    if (reconnecting) return
+    setReconnecting(true)
+    try {
+      await startCamera(camera.id)
+      toast({ body: `已发起重连：${camera.name}`, type: 'info' })
+      await queryClient.invalidateQueries({ queryKey: ['cameras'] })
+    } catch (err) {
+      toast({
+        body: err instanceof Error ? err.message : '重连失败',
+        type: 'error',
+      })
+    } finally {
+      setReconnecting(false)
+    }
+  }
 
   // 国标：仅作提示，不拦截拉流（在线态以后端 INVITE 为准，避免列表态滞后误拦）
   const notReadyHint =
@@ -322,9 +359,36 @@ function PreviewTilePlayer({
         />
       ) : null}
 
-      <DetectionOverlay boxes={visionBoxes} visible={showAiOverlay} />
+      <DetectionOverlay
+        boxes={visionBoxes}
+        visible={showAiOverlay}
+        videoW={videoSize.w}
+        videoH={videoSize.h}
+      />
 
-      {overlayText ? (
+      {!isPlaybackSlot && !deviceOffline ? (
+        <span className="ff-live-badge">直播</span>
+      ) : null}
+
+      {deviceOffline && !isPlaybackSlot ? (
+        <div className="ff-tile-offline">
+          <span className="ff-tile-offline-icon" aria-hidden>
+            <VideoCameraSlashIcon />
+          </span>
+          <span className="ff-tile-offline-title">设备离线</span>
+          <span className="ff-tile-offline-sub">
+            最后在线 {formatLastSeen(camera.updatedAt)} · 检查网络后可重连
+          </span>
+          <button
+            type="button"
+            className="ff-tile-offline-btn"
+            onClick={reconnect}
+            disabled={reconnecting}
+          >
+            {reconnecting ? '重连中…' : '重连设备'}
+          </button>
+        </div>
+      ) : overlayText ? (
         <div className="ff-preview-offline" data-kind={playState}>
           <span>{overlayText}</span>
           {playState === 'connecting' ? (
@@ -434,6 +498,18 @@ function PreviewTilePlayer({
           }}
         >
           换源
+        </button>
+        <button
+          type="button"
+          className="ff-preview-switch ff-preview-switch--icon"
+          title="全屏查看"
+          aria-label="全屏查看"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenDetail()
+          }}
+        >
+          <ArrowsPointingOutIcon aria-hidden />
         </button>
       </div>
     </div>

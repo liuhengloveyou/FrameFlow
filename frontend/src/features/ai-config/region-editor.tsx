@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { Text } from '@astryxdesign/core/Text'
+import { ToneBadge } from '@/components/tone-badge'
 import { Go2rtcPlayer } from '@/lib/go2rtc/go2rtc-player'
 import { DetectionOverlay } from '@/features/preview/detection-overlay'
 import { parseVisionPayload, type VisionBox } from '@/lib/vision-types'
@@ -360,7 +360,7 @@ export function RegionEditor({
               {regions.length === 0 ? (
                 <div className="ff-region-group">
                   <span className="ff-region-group-label">当前</span>
-                  <Badge label="整帧检测" variant="neutral" />
+                  <ToneBadge tone="off">整帧检测</ToneBadge>
                 </div>
               ) : (
                 <div className="ff-region-group">
@@ -377,7 +377,7 @@ export function RegionEditor({
                           setSelectedIndex(i)
                         }}
                       >
-                        <Badge label={`${i + 1}`} variant="neutral" />
+                        <span className="ff-region-chip-index">{i + 1}</span>
                         <span>{regions[i].length} 点</span>
                       </button>
                     ))}

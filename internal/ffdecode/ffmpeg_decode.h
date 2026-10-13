@@ -25,4 +25,24 @@ void ffdecode_close(ffdecode_ctx *ctx);
 int ffdecode_feed(ffdecode_ctx *ctx, const uint8_t *data, size_t len, uint8_t **rgb_out, int *w_out,
                   int *h_out);
 
+/*
+ * 持续（流式）解码：不在每次 feed 后重置解码器，保持参考帧状态。
+ * 调用方须持续送入后续 AU（增量样本），成本与本次送入的帧数成正比，
+ * 而非整个 GOP；适合「周期性取最新一帧」的实时链路。
+ */
+ffdecode_ctx *ffdecode_open_h264_stream(int max_out_w);
+ffdecode_ctx *ffdecode_open_hevc_stream(int max_out_w);
+
+/*
+ * 增量送入：把 data 中所有访问单元按序送进持久解码器。
+ *   want_rgb = 0：只推进解码状态，跳过 swscale/RGB 分配与拷贝（省 CPU 与内存带宽）。
+ * Returns:
+ *   0  — 至少解出一帧（want_rgb=1 时 *rgb_out 为最后一帧，av_malloc，调用方 av_free）
+ *   1  — 需更多输入 / 无帧
+ *   <0 — AVERROR（内部已重置解码器，调用方须从下一个 IDR 重新对齐）
+ */
+int ffdecode_feed_stream(ffdecode_ctx *ctx, const uint8_t *data, size_t len, int want_rgb,
+                         uint8_t **rgb_out, int *w_out, int *h_out);
+
+
 #endif

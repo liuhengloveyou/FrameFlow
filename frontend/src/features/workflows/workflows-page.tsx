@@ -11,7 +11,16 @@ import { Layout } from '@astryxdesign/core/Layout'
 import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  ExclamationTriangleIcon,
+  PlayCircleIcon,
+  QueueListIcon,
+  StopCircleIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { PageTabsRow } from '@/components/page-tabs-row'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
 import { WorkflowStatusBadge } from '@/components/status-badge'
 import { AlarmLinkageSubnav } from '@/features/alarms/alarm-linkage-subnav'
 import {
@@ -42,6 +51,16 @@ export function WorkflowsPage() {
     if (!statusFilter) return list
     return list.filter((w) => w.status === statusFilter)
   }, [query.data, statusFilter])
+
+  const counts = useMemo(() => {
+    const list = query.data ?? []
+    return {
+      all: list.length,
+      running: list.filter((w) => w.status === 'running').length,
+      stopped: list.filter((w) => w.status === 'stopped' || w.status === 'idle').length,
+      error: list.filter((w) => w.status === 'error').length,
+    }
+  }, [query.data])
 
   const createMutation = useMutation({
     mutationFn: () => createWorkflow({ name, description }),
@@ -100,48 +119,72 @@ export function WorkflowsPage() {
   return (
     <PageLayout
         title="工作流"
-        description="编排处置流程；由联动规则或手工绑定触发"
-        actions={
-          <HStack gap={2}>
-            <Button
-              label="刷新"
-              variant="secondary"
-              clickAction={async () => {
-                await query.refetch()
-              }}
-            />
-            <Button label="新建工作流" variant="primary" onClick={openCreate} />
-          </HStack>
+        badge="处置编排"
+        toolbar={
+          <PageTabsRow
+            stats={
+              <InlineStatGroup>
+                <InlineStat
+                  icon={<QueueListIcon />}
+                  value={counts.all}
+                  label="工作流总数"
+                />
+                <InlineStat
+                  icon={<PlayCircleIcon />}
+                  value={counts.running}
+                  label="运行中"
+                  tone="ok"
+                />
+                <InlineStat
+                  icon={<StopCircleIcon />}
+                  value={counts.stopped}
+                  label="停止 / 空闲"
+                  tone="teal"
+                />
+                <InlineStat
+                  icon={<ExclamationTriangleIcon />}
+                  value={counts.error}
+                  label="异常"
+                  tone="warn"
+                />
+              </InlineStatGroup>
+            }
+          >
+            <AlarmLinkageSubnav />
+          </PageTabsRow>
         }
-        toolbar={<AlarmLinkageSubnav />}
       >
-
-      <div className="ff-toolbar">
-        <Selector
-          label="运行状态"
-          isLabelHidden
-          placeholder="全部状态"
-          hasClear
-          value={statusFilter}
-          onChange={(v) => setStatusFilter(v ?? '')}
-          options={[
-            { label: '运行中', value: 'running' },
-            { label: '已停止', value: 'stopped' },
-            { label: '空闲', value: 'idle' },
-            { label: '异常', value: 'error' },
-          ] satisfies Array<{ label: string; value: WorkflowStatus }>}
-        />
-      </div>
+      <PageToolbar
+        filters={
+          <Selector
+            label="运行状态"
+            isLabelHidden
+            placeholder="全部状态"
+            hasClear
+            value={statusFilter}
+            onChange={(v) => setStatusFilter(v ?? '')}
+            options={[
+              { label: '运行中', value: 'running' },
+              { label: '已停止', value: 'stopped' },
+              { label: '空闲', value: 'idle' },
+              { label: '异常', value: 'error' },
+            ] satisfies Array<{ label: string; value: WorkflowStatus }>}
+          />
+        }
+        actions={
+          <Button label="新建工作流" variant="primary" size="sm" onClick={openCreate} />
+        }
+      />
 
       <div className="ff-model-grid">
         {filtered.map((wf) => (
           <Card key={wf.id} padding={4}>
             <VStack gap={3}>
-              <div>
-                <strong>{wf.name}</strong>
-                <p className="ff-page-desc">{wf.description}</p>
-              </div>
-              <WorkflowStatusBadge status={wf.status} />
+              <HStack gap={2} vAlign="center" justify="between">
+                <strong className="ff-wf-card-name">{wf.name}</strong>
+                <WorkflowStatusBadge status={wf.status} />
+              </HStack>
+              <p className="ff-page-desc">{wf.description || '暂无描述'}</p>
               <div>
                 <p className="ff-page-desc">
                   节点 {wf.nodeCount} · 连线 {wf.edgeCount} · 调用 {wf.callCount} · 成功{' '}
@@ -152,10 +195,10 @@ export function WorkflowsPage() {
                 </div>
               </div>
               <p className="ff-page-desc">
-                最近执行 {wf.lastRunAt ? new Date(wf.lastRunAt).toLocaleString() : '-'} · 更新{' '}
+                最近执行 {wf.lastRunAt ? new Date(wf.lastRunAt).toLocaleString() : '—'} · 更新{' '}
                 {new Date(wf.updatedAt).toLocaleString()}
               </p>
-              <HStack gap={1} vAlign="center">
+              <HStack gap={1} vAlign="center" className="ff-card-bottom">
                 <Link to="/workflows/$id" params={{ id: wf.id }}>
                   <Button label="编排" size="sm" variant="primary" />
                 </Link>
@@ -196,7 +239,11 @@ export function WorkflowsPage() {
           </Card>
         ))}
       </div>
-      {filtered.length === 0 ? <div className="ff-placeholder">无匹配工作流</div> : null}
+      {filtered.length === 0 ? (
+        <div className="ff-placeholder">
+          {query.isLoading ? '加载中…' : '暂无工作流，点击右上「新建工作流」开始编排'}
+        </div>
+      ) : null}
 
       <Dialog
         isOpen={createOpen}

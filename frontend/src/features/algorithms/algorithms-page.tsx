@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
 import { Card } from '@astryxdesign/core/Card'
-import { Badge } from '@astryxdesign/core/Badge'
 import { FileInput } from '@astryxdesign/core/FileInput'
 import { NumberInput } from '@astryxdesign/core/NumberInput'
 import { TextInput } from '@astryxdesign/core/TextInput'
@@ -12,7 +11,16 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  CheckCircleIcon,
+  LinkIcon,
+  NoSymbolIcon,
+  PencilSquareIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import { ToneBadge, type Tone } from '@/components/tone-badge'
 import { SidePanel } from '@/components/side-panel'
 import {
   createAlgorithm,
@@ -34,6 +42,12 @@ const STATUS_LABEL: Record<AlgorithmCapability['status'], string> = {
   ready: '可用',
   draft: '草稿',
   disabled: '已停用',
+}
+
+const STATUS_TONE: Record<AlgorithmCapability['status'], Tone> = {
+  ready: 'ok',
+  draft: 'warn',
+  disabled: 'off',
 }
 
 const emptyForm: AlgorithmInput = {
@@ -468,79 +482,79 @@ export function AlgorithmsPage() {
   return (
     <PageLayout
       title="算法接入"
-      description="将模型仓库中的权重封装为可绑定到摄像头的检测能力"
-      actions={
-        <>
-          <Badge label={`共 ${stats.total} 个`} variant="neutral" />
-          <Button
-            label="刷新"
-            variant="secondary"
-            size="sm"
-            isLoading={query.isFetching}
-            clickAction={async () => {
-              await query.refetch()
-            }}
-          />
-          <Button
-            label="新建算法"
-            variant="primary"
-            size="sm"
-            onClick={openCreate}
-          />
-        </>
-      }
+      badge={`可用 ${stats.ready}/${stats.total}`}
     >
-          <div className="ff-algo-stats">
-            <div className="ff-algo-stat">
-              <span>可用</span>
-              <strong>{stats.ready}</strong>
-            </div>
-            <div className="ff-algo-stat">
-              <span>草稿</span>
-              <strong>{stats.draft}</strong>
-            </div>
-            <div className="ff-algo-stat">
-              <span>停用</span>
-              <strong>{stats.disabled}</strong>
-            </div>
-            <div className="ff-algo-stat">
-              <span>已绑定设备</span>
-              <strong>{stats.bound}</strong>
-            </div>
-          </div>
-
-          <div className="ff-toolbar">
-            <TextInput
-              label="搜索"
-              isLabelHidden
-              placeholder="名称 / 描述 / 标签"
-              value={q}
-              onChange={setQ}
-              hasClear
-            />
-            <Selector
-              label="分类"
-              isLabelHidden
-              placeholder="全部分类"
-              hasClear
-              value={category}
-              onChange={(v) => setCategory(v ?? '')}
-              options={allCategories.map((c) => ({ label: c, value: c }))}
-            />
-            <Selector
-              label="状态"
-              isLabelHidden
-              placeholder="全部状态"
-              hasClear
-              value={status}
-              onChange={(v) => setStatus(v ?? '')}
-              options={[
-                { label: '可用', value: 'ready' },
-                { label: '草稿', value: 'draft' },
-                { label: '已停用', value: 'disabled' },
-              ]}
-            />
-          </div>
+          <PageToolbar
+            filters={
+              <>
+                <TextInput
+                  label="搜索"
+                  isLabelHidden
+                  placeholder="名称 / 描述 / 标签"
+                  value={q}
+                  onChange={setQ}
+                  hasClear
+                />
+                <Selector
+                  label="分类"
+                  isLabelHidden
+                  placeholder="全部分类"
+                  hasClear
+                  value={category}
+                  onChange={(v) => setCategory(v ?? '')}
+                  options={allCategories.map((c) => ({ label: c, value: c }))}
+                />
+                <Selector
+                  label="状态"
+                  isLabelHidden
+                  placeholder="全部状态"
+                  hasClear
+                  value={status}
+                  onChange={(v) => setStatus(v ?? '')}
+                  options={[
+                    { label: '可用', value: 'ready' },
+                    { label: '草稿', value: 'draft' },
+                    { label: '已停用', value: 'disabled' },
+                  ]}
+                />
+              </>
+            }
+            stats={
+              <InlineStatGroup>
+                <InlineStat
+                  icon={<CheckCircleIcon />}
+                  value={stats.ready}
+                  label="可用算法"
+                  tone="ok"
+                />
+                <InlineStat
+                  icon={<PencilSquareIcon />}
+                  value={stats.draft}
+                  label="草稿"
+                  tone="warn"
+                />
+                <InlineStat
+                  icon={<NoSymbolIcon />}
+                  value={stats.disabled}
+                  label="已停用"
+                />
+                <InlineStat
+                  icon={<LinkIcon />}
+                  value={stats.bound}
+                  label="已绑定通道"
+                  tone="teal"
+                />
+              </InlineStatGroup>
+            }
+            actions={
+              <Button
+                label="新建算法"
+                variant="primary"
+                size="sm"
+                onClick={openCreate}
+              />
+            }
+          />
 
           <div className="ff-model-grid">
             {(query.data?.items ?? []).map((alg) => (
@@ -551,19 +565,14 @@ export function AlgorithmsPage() {
                     <p className="ff-model-card-desc">{alg.description}</p>
                   </div>
                   <div className="ff-model-card-badges">
-                    <Badge
-                      label={STATUS_LABEL[alg.status]}
-                      variant={
-                        alg.status === 'ready'
-                          ? 'success'
-                          : alg.status === 'draft'
-                            ? 'warning'
-                            : 'neutral'
-                      }
-                    />
-                    <Badge label={alg.category} variant="teal" />
+                    <ToneBadge tone={STATUS_TONE[alg.status] ?? 'off'}>
+                      {STATUS_LABEL[alg.status]}
+                    </ToneBadge>
+                    <ToneBadge tone="teal">{alg.category}</ToneBadge>
                     {alg.tags.slice(0, 3).map((t) => (
-                      <Badge key={t} label={t} variant="neutral" />
+                      <ToneBadge key={t} tone="off">
+                        {t}
+                      </ToneBadge>
                     ))}
                   </div>
                   <div className="ff-model-card-meta">

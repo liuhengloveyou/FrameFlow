@@ -10,9 +10,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -36,13 +39,34 @@ const (
 
 var (
 	yoloMu     sync.Mutex
-	yoloByPath = map[string]*yoloDetector{} // 绝对路径 → session；多算法可同时常驻，按绑定选用
+	yoloByPath = map[string]*yoloDetector{} // 绝对路径 → session 池；多算法可同时常驻，按绑定选用
 	ortInitMu  sync.Once
 	ortInitErr error
 
 	ortLibMu   sync.RWMutex
 	ortLibPath string // ORT 动态库路径（环境变量 / 自动发现，非 YAML）
+
+	yoloPoolSizeCfg atomic.Int32 // ≤0 = 自动（见 desiredYOLOPoolSize）
 )
+
+// SetYOLOSessionPoolSize 覆盖每个模型的 ORT 会话池大小（≤0 恢复自动）。
+// 只影响之后加载 / 刷新参数时重建的池，对已建好的池立即尝试重建。
+func SetYOLOSessionPoolSize(n int) { yoloPoolSizeCfg.Store(int32(n)) }
+
+// desiredYOLOPoolSize 会话池大小：多路流能否真正并发推理的关键。
+// 每个 session 固定 intra/inter=1 线程（见 newYOLOSession），实测加大线程数无收益、
+// 而多个 session 可各占一个核并行跑，所以按核数开 1~4 个槽位。
+func desiredYOLOPoolSize() int {
+	if n := int(yoloPoolSizeCfg.Load()); n > 0 {
+		return min(n, 8)
+	}
+	if e := strings.TrimSpace(os.Getenv("FRAMEFLOW_YOLO_SESSIONS")); e != "" {
+		if n, err := strconv.Atoi(e); err == nil && n > 0 {
+			return min(n, 8)
+		}
+	}
+	return clampInt(runtime.NumCPU()/4, 1, 4)
+}
 
 // SetORTLibPath 设置 ONNX Runtime 共享库路径；应在首次 ensureORT 之前调用（如 vision.Init）。
 func SetORTLibPath(p string) {
@@ -124,8 +148,15 @@ func mustGetwd() string {
 	return wd
 }
 
+// yoloSlot 一个可独立并发使用的推理槽位：ORT session + 该槽位独占的 letterbox 缓冲。
+// ORT session 非线程安全，把「session + scratch」捆绑成槽位，多路流各占一个槽位即可并行推理。
+type yoloSlot struct {
+	session *ort.DynamicAdvancedSession
+	scratch letterboxScratch
+	pool    chan *yoloSlot // 所属池；池重建时随旧池一起作废，避免归还到新池
+}
+
 type yoloDetector struct {
-	session   *ort.DynamicAdvancedSession
 	modelPath string
 	labels    []string
 	inName    string
@@ -135,8 +166,145 @@ type yoloDetector struct {
 	skipNMS   bool
 	maxDet    int
 	size      int
-	scratch   letterboxScratch // 复用 letterbox 缓冲（对齐 MediaAI InferenceBuffer）
-	runMu     sync.Mutex       // 保护 scratch + session.Run（ORT session 非线程安全）
+
+	mu       sync.Mutex // 保护 slots 生命周期（重建 / 销毁）
+	pool     chan *yoloSlot
+	slots    []*yoloSlot
+	poolSize int
+	done     chan struct{}
+	closed   atomic.Bool
+}
+
+// ready 检测器是否可用（池已建好且未销毁）。
+func (d *yoloDetector) ready() bool { return d != nil && d.pool != nil && !d.closed.Load() }
+
+func (d *yoloDetector) newPool(slots []*yoloSlot) {
+	p := make(chan *yoloSlot, len(slots))
+	for _, s := range slots {
+		s.pool = p // 先绑定所属池，再入池
+		p <- s
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.slots = slots
+	d.poolSize = len(slots)
+	d.pool = p
+	d.done = make(chan struct{})
+	d.closed.Store(false)
+}
+
+// acquire 取一个空闲槽位。dropIfBusy=true 时池空即返回 ErrVisionInferBusy（实时链路丢帧优于排队）。
+func (d *yoloDetector) acquire(dropIfBusy bool) (*yoloSlot, error) {
+	if !d.ready() {
+		return nil, fferrors.ErrVisionYoloSkipped
+	}
+	if dropIfBusy {
+		select {
+		case s := <-d.pool:
+			return s, nil
+		default:
+			return nil, fferrors.ErrVisionInferBusy
+		}
+	}
+	select {
+	case s := <-d.pool:
+		return s, nil
+	case <-d.done:
+		return nil, fferrors.ErrVisionYoloSkipped
+	}
+}
+
+// release 归还槽位到它所属的池；池已被重建 / 销毁（通道已满或已作废）则丢弃该槽位。
+func (d *yoloDetector) release(s *yoloSlot) {
+	if s == nil || s.pool == nil {
+		return
+	}
+	select {
+	case s.pool <- s:
+	default:
+	}
+}
+
+// destroy 关闭检测器：等在途推理归还槽位后释放所有 session。幂等。
+func (d *yoloDetector) destroy() {
+	d.mu.Lock()
+	if d.closed.Load() {
+		d.mu.Unlock()
+		return
+	}
+	d.closed.Store(true)
+	if d.done != nil {
+		close(d.done)
+	}
+	slots, pool := d.slots, d.pool
+	d.slots = nil
+	d.mu.Unlock()
+
+	// 每个在途推理恰好持有一个槽位；收回 len(slots) 个即可确认全部结束。
+	for i := range slots {
+		select {
+		case <-pool:
+		case <-time.After(30 * time.Second):
+			log.Warn().Int("done", i).Int("slots", len(slots)).Msg("[vision] yolo26: wait in-flight inference timeout")
+		}
+	}
+	for _, s := range slots {
+		if s.session != nil {
+			_ = s.session.Destroy()
+			s.session = nil
+		}
+	}
+}
+
+// ensurePoolSize 池大小与期望不一致时重建（模型刷新参数时调用）。
+func (d *yoloDetector) ensurePoolSize(n int) {
+	if n < 1 {
+		n = 1
+	}
+	d.mu.Lock()
+	cur := d.poolSize
+	d.mu.Unlock()
+	if cur == n {
+		return
+	}
+	slots, err := buildYOLOSlots(d.modelPath, d.inName, d.outName, n)
+	if err != nil {
+		log.Warn().Err(err).Int("want", n).Int("keep", cur).Msg("[vision] yolo26: rebuild session pool failed")
+		return
+	}
+	d.destroy()
+	d.newPool(slots)
+	log.Info().Str("model", d.modelPath).Int("sessions", n).Int("prev", cur).
+		Msg("[vision] yolo26: session pool resized")
+}
+
+// buildYOLOSlots 按需创建 n 个 session；第 2 个起失败则退化为已有的槽位数（不整体失败）。
+func buildYOLOSlots(modelPath, inName, outName string, n int) ([]*yoloSlot, error) {
+	if n < 1 {
+		n = 1
+	}
+	slots := make([]*yoloSlot, 0, n)
+	for i := 0; i < n; i++ {
+		sess, err := newYOLOSession(modelPath, inName, outName)
+		if err != nil {
+			if i == 0 {
+				return nil, err
+			}
+			log.Warn().Err(err).Int("ok", i).Int("want", n).Msg("[vision] yolo26: extra session failed, degrade pool")
+			break
+		}
+		slots = append(slots, &yoloSlot{session: sess})
+	}
+	return slots, nil
+}
+
+func destroyYOLOSlots(slots []*yoloSlot) {
+	for _, s := range slots {
+		if s != nil && s.session != nil {
+			_ = s.session.Destroy()
+			s.session = nil
+		}
+	}
 }
 
 func absModelPath(modelPath string) string {
@@ -212,12 +380,13 @@ func LoadYOLOModel(modelPath, labelsPath, ortLib string, conf float32, inputSize
 
 	// 已缓存：只刷新参数，避免每帧读 ONNX 元数据并误报 configured=640
 	yoloMu.Lock()
-	if d := yoloByPath[modelPath]; d != nil && d.session != nil {
+	if d := yoloByPath[modelPath]; d.ready() {
 		d.conf = conf
 		d.nmsIoU = nmsIoU
 		d.skipNMS = skipNMS
 		d.maxDet = maxDet
 		yoloMu.Unlock()
+		d.ensurePoolSize(desiredYOLOPoolSize()) // 池大小可配；不一致才重建
 		return nil
 	}
 	yoloMu.Unlock()
@@ -245,13 +414,13 @@ func LoadYOLOModel(modelPath, labelsPath, ortLib string, conf float32, inputSize
 		log.Error().Err(err).Msg("[vision] yolo26: io names")
 		return err
 	}
-	sess, err := newYOLOSession(modelPath, inName, outName)
+	poolSize := desiredYOLOPoolSize()
+	slots, err := buildYOLOSlots(modelPath, inName, outName, poolSize)
 	if err != nil {
 		log.Error().Err(err).Str("model", modelPath).Msg("[vision] yolo26: session")
 		return err
 	}
 	det := &yoloDetector{
-		session:   sess,
 		modelPath: modelPath,
 		labels:    labels,
 		inName:    inName,
@@ -262,8 +431,9 @@ func LoadYOLOModel(modelPath, labelsPath, ortLib string, conf float32, inputSize
 		maxDet:    maxDet,
 		size:      inputSize,
 	}
+	det.newPool(slots)
 	yoloMu.Lock()
-	if existing := yoloByPath[modelPath]; existing != nil && existing.session != nil {
+	if existing := yoloByPath[modelPath]; existing.ready() {
 		existing.conf = conf
 		existing.nmsIoU = nmsIoU
 		existing.skipNMS = skipNMS
@@ -272,12 +442,8 @@ func LoadYOLOModel(modelPath, labelsPath, ortLib string, conf float32, inputSize
 			existing.size = inputSize
 		}
 		yoloMu.Unlock()
-		det.runMu.Lock()
-		if det.session != nil {
-			_ = det.session.Destroy()
-			det.session = nil
-		}
-		det.runMu.Unlock()
+		// 并发加载：已有可用检测器，丢弃本次新建的槽位。
+		destroyYOLOSlots(slots)
 		return nil
 	}
 	nCached := len(yoloByPath) + 1
@@ -291,6 +457,7 @@ func LoadYOLOModel(modelPath, labelsPath, ortLib string, conf float32, inputSize
 		Bool("nms_off", skipNMS).
 		Float64("nms_iou", float64(nmsIoU)).
 		Int("max_det", maxDet).
+		Int("sessions", det.poolSize).
 		Int("cached_models", nCached).
 		Msg("[vision] yolo26: ready (bound model cache)")
 	return nil
@@ -314,12 +481,7 @@ func UnloadYOLOModel(modelPath string) {
 	if old == nil {
 		return
 	}
-	old.runMu.Lock()
-	if old.session != nil {
-		_ = old.session.Destroy()
-		old.session = nil
-	}
-	old.runMu.Unlock()
+	old.destroy()
 	log.Info().Str("model", modelPath).Msg("[vision] yolo26: unloaded")
 }
 
@@ -331,8 +493,7 @@ func HasYOLOModel(modelPath string) bool {
 	}
 	yoloMu.Lock()
 	defer yoloMu.Unlock()
-	d := yoloByPath[modelPath]
-	return d != nil && d.session != nil
+	return yoloByPath[modelPath].ready()
 }
 
 // HasYOLO 是否已有任意绑定模型在缓存中（非“系统默认模型”）。
@@ -348,7 +509,7 @@ func YOLOModelInfo(modelPath string) (conf float32, inputSize, labelCount int, r
 	yoloMu.Lock()
 	defer yoloMu.Unlock()
 	d := yoloByPath[modelPath]
-	if d == nil || d.session == nil {
+	if !d.ready() {
 		return 0, 0, 0, false
 	}
 	return d.conf, d.size, len(d.labels), true
@@ -360,7 +521,7 @@ func YOLORuntimeInfo() (conf float32, inputSize, labelCount int, ready bool) {
 	yoloMu.Lock()
 	defer yoloMu.Unlock()
 	for _, d := range yoloByPath {
-		if d != nil && d.session != nil {
+		if d.ready() {
 			return d.conf, d.size, len(d.labels), true
 		}
 	}
@@ -426,7 +587,7 @@ func DetectJPEGOnce(modelPath, labelsPath string, imageBytes []byte, conf, nmsIo
 	yoloMu.Lock()
 	d := yoloByPath[absModelPath(modelPath)]
 	yoloMu.Unlock()
-	if d == nil || d.session == nil {
+	if !d.ready() {
 		return nil, fferrors.ErrVisionYoloSkipped
 	}
 	log.Info().
@@ -596,7 +757,7 @@ func detectBoxesJPEG(modelPath string, jpeg []byte, conf float32) ([]VisionBBox,
 	yoloMu.Lock()
 	d := yoloByPath[modelPath]
 	yoloMu.Unlock()
-	if d == nil || d.session == nil {
+	if !d.ready() {
 		return nil, fferrors.ErrVisionYoloSkipped
 	}
 	return d.infer(jpeg, conf)
@@ -609,7 +770,7 @@ func detectBoxesRGB(modelPath string, rgb []byte, w, h int, conf float32) ([]Vis
 	yoloMu.Lock()
 	d := yoloByPath[modelPath]
 	yoloMu.Unlock()
-	if d == nil || d.session == nil {
+	if !d.ready() {
 		return nil, fferrors.ErrVisionYoloSkipped
 	}
 	if w < 1 || h < 1 || len(rgb) < w*h*3 {
@@ -637,24 +798,21 @@ func (d *yoloDetector) inferFromImage(img image.Image, conf float32) ([]VisionBB
 	return d.inferFromRGBA(imageToRGBA(img), ow, oh, conf)
 }
 
-// inferFromRGB888：视频帧完整链路（复用缓冲；dropIfBusy 时检测器忙则丢帧）。
+// inferFromRGB888：视频帧完整链路（复用槽位缓冲；dropIfBusy 时池满则丢帧）。
 // conf≤0 时使用 d.conf。
 func (d *yoloDetector) inferFromRGB888(rgb []byte, ow, oh int, dropIfBusy bool, conf float32) ([]VisionBBox, error) {
 	if d.size < 1 {
 		return nil, fmt.Errorf("模型输入尺寸无效：%d", d.size)
 	}
-	if dropIfBusy {
-		if !d.runMu.TryLock() {
-			return nil, fferrors.ErrVisionInferBusy
-		}
-	} else {
-		d.runMu.Lock()
+	slot, err := d.acquire(dropIfBusy)
+	if err != nil {
+		return nil, err
 	}
-	defer d.runMu.Unlock()
+	defer d.release(slot)
 
 	tPre := time.Now()
-	blob, padX, padY, scale := letterboxRGB888Into(rgb, ow, oh, d.size, &d.scratch)
-	return d.runBlobLocked(blob, ow, oh, padX, padY, scale, time.Since(tPre), conf)
+	blob, padX, padY, scale := letterboxRGB888Into(rgb, ow, oh, d.size, &slot.scratch)
+	return d.runBlob(slot, blob, ow, oh, padX, padY, scale, time.Since(tPre), conf)
 }
 
 // inferFromRGBA：样张/JPEG 路径；letterbox 复用缓冲 → 推理 → 后处理。
@@ -666,17 +824,20 @@ func (d *yoloDetector) inferFromRGBA(rgba *image.RGBA, ow, oh int, conf float32)
 	if d.size < 1 {
 		return nil, fmt.Errorf("模型输入尺寸无效：%d", d.size)
 	}
-	d.runMu.Lock()
-	defer d.runMu.Unlock()
+	slot, err := d.acquire(false)
+	if err != nil {
+		return nil, err
+	}
+	defer d.release(slot)
 
 	tPre := time.Now()
-	blob, padX, padY, scale := letterboxInto(rgba, d.size, &d.scratch)
-	return d.runBlobLocked(blob, ow, oh, padX, padY, scale, time.Since(tPre), conf)
+	blob, padX, padY, scale := letterboxInto(rgba, d.size, &slot.scratch)
+	return d.runBlob(slot, blob, ow, oh, padX, padY, scale, time.Since(tPre), conf)
 }
 
-// runBlobLocked 调用方须已持有 d.runMu。conf≤0 时使用 d.conf。
-func (d *yoloDetector) runBlobLocked(blob []float32, ow, oh int, padX, padY, scale float32, preprocessDur time.Duration, conf float32) ([]VisionBBox, error) {
-	if d.session == nil {
+// runBlob 调用方须已独占 slot。conf≤0 时使用 d.conf。
+func (d *yoloDetector) runBlob(slot *yoloSlot, blob []float32, ow, oh int, padX, padY, scale float32, preprocessDur time.Duration, conf float32) ([]VisionBBox, error) {
+	if slot == nil || slot.session == nil {
 		return nil, fferrors.ErrVisionYoloSkipped
 	}
 	if conf <= 0 {
@@ -700,7 +861,7 @@ func (d *yoloDetector) runBlobLocked(blob []float32, ow, oh int, padX, padY, sca
 
 	tRun := time.Now()
 	outs := []ort.Value{nil}
-	if err := d.session.Run([]ort.Value{inTensor}, outs); err != nil {
+	if err := slot.session.Run([]ort.Value{inTensor}, outs); err != nil {
 		return nil, fmt.Errorf("推理失败（输入 %dx%d→%d）：%w", ow, oh, d.size, err)
 	}
 	if outs[0] == nil {
@@ -852,10 +1013,10 @@ func debugLogAllRawDetectionSlots(raw []float32, shape []int64, confTh float32, 
 
 // postprocessStats 端到端 [N,6] 后处理计数，用于区分「置信度不够」与「高分但框退化」。
 type postprocessStats struct {
-	PassConf  int
-	FailGeom  int
-	MaxValid  float64 // 通过几何校验的槽位最大 conf；无则 0
-	MaxRaw    float64 // 原始槽位最大 conf（可能对应零面积框）
+	PassConf int
+	FailGeom int
+	MaxValid float64 // 通过几何校验的槽位最大 conf；无则 0
+	MaxRaw   float64 // 原始槽位最大 conf（可能对应零面积框）
 }
 
 // maxInterleavedSlotConf 对 [...,N,6] 端到端布局取各槽位 conf（每 6 元组第 5 个）的最大值，便于对照 vision.conf。

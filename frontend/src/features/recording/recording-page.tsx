@@ -1,23 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
 import { DateInput } from '@astryxdesign/core/DateInput'
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core/SegmentedControl'
-import { HStack } from '@astryxdesign/core/HStack'
+import { Selector } from '@astryxdesign/core/Selector'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Text } from '@astryxdesign/core/Text'
 import { VStack } from '@astryxdesign/core/VStack'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  ClockIcon,
+  FilmIcon,
+  RectangleStackIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import {
+  LayoutSwitcher,
+  type ScreenLayout,
+} from '@/components/layout-switcher'
 import { SidePanel } from '@/components/side-panel'
 import { CameraStatusBadge } from '@/components/status-badge'
 import { listCameras } from '@/apis/devices-api'
 import { listReviewEvents } from '@/apis/review-api'
-import { seedPreviewSource } from '@/lib/preview-seed'
+import { listRecordingSegments } from '@/apis/recording-api'
 import {
   encodeSlotKey,
   channelBizId,
@@ -28,11 +34,12 @@ import type { Camera } from '@/types/api'
 import { PreviewTile } from '@/features/preview/preview-tile'
 import { MonitorDetail } from '@/features/preview/monitor-detail'
 import { formatClock, formatDay } from '@/features/preview/playback-utils'
+import type { ISODateString } from '@astryxdesign/core/Calendar'
 import { ReviewTimeline } from '@/features/review/review-timeline'
 import { RecordingPolicyPanel } from './recording-policy-panel'
 import { localDateKey } from './recording-segments'
 
-type Layout = '1' | '4' | '9'
+type Layout = ScreenLayout
 
 function slotCount(layout: Layout) {
   return layout === '1' ? 1 : layout === '4' ? 4 : 9
@@ -93,10 +100,9 @@ function fillSlots(keys: string[], layout: Layout): Array<string | null> {
 
 export function RecordingPage() {
   const toast = useToast()
-  const navigate = useNavigate()
   const autoFilledRef = useRef(false)
 
-  const [layout, setLayout] = useState<Layout>('9')
+  const [layout, setLayout] = useState<Layout>('1')
   const [slotIds, setSlotIds] = useState<Array<string | null>>([])
   const [selectedSlot, setSelectedSlot] = useState(0)
   const [pickSlot, setPickSlot] = useState<number | null>(null)
@@ -179,6 +185,134 @@ export function RecordingPage() {
 
   const timelineEvents = eventsQuery.data?.items ?? []
 
+  /** 工具条设备/通道选择器：展开所有可播流 */
+  const deviceOptions = useMemo(() => {
+    const opts: Array<{ label: string; value: string }> = []
+    for (const c of cameras) {
+      const chs = c.channels ?? []
+      if (chs.length > 0) {
+        for (const ch of chs) {
+          opts.push({
+            label: `${c.name} · ${ch.name?.trim() || channelBizId(ch)}`,
+            value: encodeSlotKey({
+              cameraId: String(c.id),
+              channelId: channelBizId(ch),
+            }),
+          })
+        }
+        continue
+      }
+      opts.push({
+        label: c.name,
+        value: encodeSlotKey({ cameraId: String(c.id) }),
+      })
+    }
+    return opts
+  }, [cameras])
+
+  /** 右侧「连续录像」：真实录像片段（按设备 + 日期） */
+  const segmentsQuery = useQuery({
+    queryKey: ['recording-segments', { cameraId: selectedSrc?.cameraId, day }],
+    queryFn: () =>
+      listRecordingSegments({
+        cameraId: selectedSrc?.cameraId,
+        date: day,
+      }),
+    enabled: Boolean(selectedSrc?.cameraId),
+  })
+  const segments = segmentsQuery.data ?? []
+
+  /** 右侧「事件片段」：当日事件按时间倒序 */
+  const dayEvents = useMemo(() => {
+    return [...timelineEvents]
+      .filter((e) => localDateKey(new Date(e.occurredAt)) === day)
+      .sort(
+        (a, b) =>
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+      )
+  }, [timelineEvents, day])
+
+  /** 当日已选通道的录像覆盖时长（小时，一位小数） */
+  const coverageHours = useMemo(
+    () =>
+      (segments.reduce((n, s) => n + (s.durationSec ?? 0), 0) / 3600).toFixed(1),
+    [segments],
+  )
+
+  /** 右侧日期行：今天起往前 7 天 */
+  const dateStrip = useMemo(() => {
+    const week = ['日', '一', '二', '三', '四', '五', '六']
+    const arr: Array<{
+      key: ISODateString
+      day: number
+      week: string
+      isToday: boolean
+    }> = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      arr.push({
+        key: formatDay(d),
+        day: d.getDate(),
+        week: `周${week[d.getDay()]}`,
+        isToday: i === 0,
+      })
+    }
+    return arr
+  }, [])
+
+  /** 导出当日录像片段列表（CSV） */
+  function exportSegmentsCsv() {
+    if (!segments.length) {
+      toast({ body: '当日暂无录像片段可导出', type: 'info' })
+      return
+    }
+    const rows = [
+      ['设备', '通道', '开始时间', '结束时间', '时长(秒)', '来源'],
+      ...segments.map((s) => [
+        s.cameraName,
+        selectedSrc?.channelId ?? '',
+        s.startAt,
+        s.endAt,
+        String(s.durationSec),
+        s.source === 'platform' ? '平台录像' : '设备录像',
+      ]),
+    ]
+    const csv =
+      '\uFEFF' + rows.map((r) => r.map((c) => `"${c}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `录像片段_${selectedCamera?.name ?? '全部'}_${day}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(a.href)
+    toast({ body: `已导出 ${segments.length} 条片段`, type: 'info' })
+  }
+
+  /** 打开某时间点的回放（优先本页详情层） */
+  function openPlaybackAt(timeMs: number, eventId: string | null) {
+    const event = eventId ? timelineEvents.find((e) => e.id === eventId) : null
+    const camera = (event ? byId.get(event.cameraId) : null) ?? selectedCamera
+    if (!camera) {
+      toast({ body: '请先选择设备', type: 'info' })
+      return
+    }
+    const channelId =
+      selectedSrc?.cameraId === String(camera.id)
+        ? selectedSrc.channelId
+        : camera.channels?.[0]
+          ? channelBizId(camera.channels[0])
+          : camera.channel || undefined
+    setEventPlayer({
+      camera,
+      channelId,
+      seekAt: new Date(Math.max(0, timeMs - 2000)).toISOString(),
+      initialPlayback: true,
+    })
+  }
+
   const pickCameras = useMemo(() => {
     const q = pickQuery.trim().toLowerCase()
     if (!q) return cameras
@@ -199,7 +333,7 @@ export function RecordingPage() {
     if (autoFilledRef.current) return
     if (!camerasQuery.isSuccess) return
     autoFilledRef.current = true
-    setSlotIds(fillSlots(allStreamKeys, '9'))
+    setSlotIds(fillSlots(allStreamKeys, '1'))
     setSelectedSlot(0)
   }, [camerasQuery.isSuccess, allStreamKeys])
 
@@ -237,74 +371,86 @@ export function RecordingPage() {
     setActiveTimeMs(null)
   }
 
-  const seekPlayback = (timeMs: number, eventId: string | null) => {
-    setActiveTimeMs(timeMs)
-    const event = eventId
-      ? timelineEvents.find((e) => e.id === eventId)
-      : null
-    const camera =
-      (event ? byId.get(event.cameraId) : null) ?? selectedCamera
-
-    if (!camera) {
-      toast({ body: '请先选择摄像头', type: 'info' })
-      return
-    }
-
-    const channelId =
-      selectedSrc?.cameraId === String(camera.id)
-        ? selectedSrc.channelId
-        : camera.channels?.[0]
-          ? channelBizId(camera.channels[0])
-          : camera.channel || undefined
-    const seekAt = new Date(Math.max(0, timeMs - 2000)).toISOString()
-    const canPlayback = camera.protocol === 'gb28181'
-
-    seedPreviewSource({
-      cameraId: String(camera.id),
-      channelId,
-      openDetail: true,
-      openPlayback: canPlayback,
-      seekAt: canPlayback ? seekAt : undefined,
-    })
-    void navigate({ to: '/preview' })
-  }
-
   return (
     <PageLayout
       title="视频回放"
+      badge={day}
       contentPadding={0}
       headerHeight={52}
-      actions={
-        <HStack gap={3} vAlign="center" wrap="wrap">
-          <DateInput
-            label="日期"
-            isLabelHidden
-            size="sm"
-            value={day}
-            max={formatDay()}
-            onChange={(v) => {
-              setDay(v ?? formatDay())
-              setActiveTimeMs(null)
-            }}
-          />
-          <SegmentedControl
-            label="预览布局"
-            size="sm"
-            layout="hug"
-            value={layout}
-            onChange={(v) => changeLayout((v as Layout) || '9')}
-          >
-            <SegmentedControlItem value="1" label="1 路" />
-            <SegmentedControlItem value="4" label="4 路" />
-            <SegmentedControlItem value="9" label="9 路" />
-          </SegmentedControl>
-          <Button
-            label="录像策略"
-            size="sm"
-            variant="ghost"
-            clickAction={() => setPolicyOpen(true)}
-          />
-        </HStack>
+      toolbar={
+        <PageToolbar
+          filters={
+            <>
+              <Selector
+                label="设备 / 通道"
+                isLabelHidden
+                placeholder="选择设备 / 通道"
+                value={selectedKey ?? ''}
+                onChange={(v) => {
+                  const src = v ? parseSlotKey(v) : null
+                  if (src) assignSlot(selectedSlot, src)
+                }}
+                options={deviceOptions}
+              />
+              <DateInput
+                label="日期"
+                isLabelHidden
+                size="sm"
+                value={day}
+                max={formatDay()}
+                onChange={(v) => {
+                  setDay(v ?? formatDay())
+                  setActiveTimeMs(null)
+                }}
+              />
+              <LayoutSwitcher
+                value={layout}
+                onChange={changeLayout}
+                options={['1', '4', '9']}
+              />
+            </>
+          }
+          stats={
+            <InlineStatGroup>
+              <InlineStat
+                icon={<RectangleStackIcon />}
+                value={allStreamKeys.length}
+                label="可选通道"
+              />
+              <InlineStat
+                icon={<FilmIcon />}
+                value={segments.length}
+                label="当日片段"
+                tone="teal"
+                title="所选通道当天的录像片段数"
+              />
+              <InlineStat
+                icon={<ClockIcon />}
+                value={coverageHours}
+                unit="小时"
+                label="覆盖时长"
+                tone="ok"
+                title="录像片段累计时长"
+              />
+            </InlineStatGroup>
+          }
+          actions={
+            <>
+              <Button
+                label="录像策略"
+                size="sm"
+                variant="ghost"
+                clickAction={() => setPolicyOpen(true)}
+              />
+              <Button
+                label="导出片段"
+                size="sm"
+                variant="secondary"
+                clickAction={exportSegmentsCsv}
+              />
+            </>
+          }
+        />
       }
     >
       <div className="ff-recording-shell">
@@ -372,9 +518,111 @@ export function RecordingPage() {
                 setActiveTimeMs(p.timeMs)
                 return
               }
-              seekPlayback(p.timeMs, p.eventId)
+              openPlaybackAt(p.timeMs, p.eventId)
             }}
           />
+
+          {/* 右侧：录像片段面板 */}
+          <aside className="ff-playback-side">
+            <div className="ff-pb-panel">
+              <div className="ff-pb-panel-head">
+                <span className="ff-pb-panel-title">
+                  <FilmIcon aria-hidden />
+                  录像片段
+                </span>
+                <span className="ff-pb-panel-hint">
+                  {dayEvents.length > 0
+                    ? `今日 ${dayEvents.length} 个事件`
+                    : '今日暂无事件'}
+                </span>
+              </div>
+              <div className="ff-pb-date-strip">
+                {dateStrip.map((d) => (
+                  <button
+                    key={d.key}
+                    type="button"
+                    className="ff-pb-date"
+                    data-active={d.key === day ? 'true' : undefined}
+                    onClick={() => {
+                      setDay(d.key)
+                      setActiveTimeMs(null)
+                    }}
+                  >
+                    <span className="ff-pb-date-week">{d.week}</span>
+                    <span className="ff-pb-date-day">{d.day}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="ff-pb-seg-group">
+                <div className="ff-pb-seg-group-title">连续录像</div>
+                {segmentsQuery.isLoading ? (
+                  <p className="ff-pb-empty">加载中…</p>
+                ) : segments.length ? (
+                  segments.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="ff-pb-seg"
+                      onClick={() =>
+                        openPlaybackAt(new Date(s.startAt).getTime(), null)
+                      }
+                    >
+                      <span className="ff-pb-seg-dot" />
+                      <span className="ff-pb-seg-time">
+                        {formatClock(new Date(s.startAt).getTime())} –{' '}
+                        {formatClock(new Date(s.endAt).getTime())}
+                      </span>
+                      <span className="ff-pb-seg-meta">
+                        {s.source === 'platform' ? '平台录像' : '设备录像'}
+                      </span>
+                      <span className="ff-pb-seg-dur">
+                        {Math.round(s.durationSec / 3600)}h
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="ff-pb-empty">当日暂无连续录像</p>
+                )}
+              </div>
+
+              <div className="ff-pb-seg-group">
+                <div className="ff-pb-seg-group-title">事件片段</div>
+                {dayEvents.length ? (
+                  dayEvents.map((e) => (
+                    <button
+                      key={e.id}
+                      type="button"
+                      className="ff-pb-seg"
+                      onClick={() =>
+                        openPlaybackAt(new Date(e.occurredAt).getTime(), e.id)
+                      }
+                    >
+                      <span
+                        className="ff-pb-seg-dot"
+                        data-tone={
+                          e.kind === 'alert'
+                            ? 'danger'
+                            : e.objectClass
+                              ? 'warn'
+                              : 'info'
+                        }
+                      />
+                      <span className="ff-pb-seg-time">
+                        {formatClock(new Date(e.occurredAt).getTime())}
+                      </span>
+                      <span className="ff-pb-seg-meta">
+                        {e.title || e.label}
+                        {e.objectClass ? ` · ${e.objectClass}` : ''}
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="ff-pb-empty">当日暂无事件片段</p>
+                )}
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
 

@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Badge } from '@astryxdesign/core/Badge'
 import { Button } from '@astryxdesign/core/Button'
 import { Switch } from '@astryxdesign/core/Switch'
 import { TextInput } from '@astryxdesign/core/TextInput'
@@ -10,7 +9,17 @@ import { HStack } from '@astryxdesign/core/HStack'
 import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
+import {
+  KeyIcon,
+  RectangleGroupIcon,
+  ShieldCheckIcon,
+  UsersIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { PageTabsRow } from '@/components/page-tabs-row'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
+import { ToneBadge } from '@/components/tone-badge'
 import { SidePanel } from '@/components/side-panel'
 import {
   DataTable,
@@ -58,7 +67,13 @@ export function UsersPage() {
       const raw = await AccountApi.tenantUserList({ nickname: q || undefined })
       return normalizeUserList(raw)
     },
-    enabled: tab === 'users' || tab === 'policies',
+    enabled: tab === 'users',
+  })
+
+  /** 用户总数（不受搜索框影响，供指标卡使用） */
+  const userTotalQuery = useQuery({
+    queryKey: ['passport-users-count'],
+    queryFn: async () => normalizeUserList(await AccountApi.tenantUserList({})).total,
   })
 
   const rolesQuery = useQuery({
@@ -69,7 +84,7 @@ export function UsersPage() {
   const policyQuery = useQuery({
     queryKey: ['passport-policy', policyRole],
     queryFn: () => AccountApi.getPolicy([policyRole]),
-    enabled: tab === 'policies' && Boolean(policyRole),
+    enabled: Boolean(policyRole),
   })
 
   const userRolesQuery = useQuery({
@@ -212,55 +227,76 @@ export function UsersPage() {
     await addRoleMutation.mutateAsync()
   }
 
-  const headerAction =
-    tab === 'users' ? (
-      <Button
-        label="新增用户"
-        variant="primary"
-        size="sm"
-        onClick={() => setDrawerOpen(true)}
-      />
-    ) : tab === 'roles' ? (
-      <Button
-        label="添加角色"
-        variant="primary"
-        size="sm"
-        isLoading={addRoleMutation.isPending}
-        clickAction={submitAddRole}
-      />
-    ) : null
-
   return (
     <PageLayout
       title="用户&权限"
-      description="Passport 用户、角色字典与菜单策略"
-      actions={headerAction}
+      badge="Passport 权限"
       toolbar={
-        <TabList
-          value={tab}
-          onChange={(v) => setTab((v as TabKey) || 'users')}
-          size="sm"
-          hasDivider
+        <PageTabsRow
+          stats={
+            <InlineStatGroup>
+              <InlineStat
+                icon={<UsersIcon />}
+                value={userTotalQuery.data ?? '—'}
+                label="用户账号"
+              />
+              <InlineStat
+                icon={<KeyIcon />}
+                value={rolesQuery.data?.length ?? '—'}
+                label="角色"
+                tone="teal"
+              />
+              <InlineStat
+                icon={<RectangleGroupIcon />}
+                value={MENU_POLICY_OPTIONS.length}
+                label="可授权菜单"
+                tone="ok"
+              />
+              <InlineStat
+                icon={<ShieldCheckIcon />}
+                value={grantedMenus.size}
+                label="已授权"
+                tone="warn"
+                title={`角色「${roleOptions.find((r) => r.value === policyRole)?.label ?? policyRole}」已授权菜单数`}
+              />
+            </InlineStatGroup>
+          }
         >
-          <Tab value="users" label="用户" />
-          <Tab value="roles" label="角色字典" />
-          <Tab value="policies" label="角色策略" />
-        </TabList>
+          <TabList
+            value={tab}
+            onChange={(v) => setTab((v as TabKey) || 'users')}
+            size="sm"
+            hasDivider
+          >
+            <Tab value="users" label="用户" />
+            <Tab value="roles" label="角色字典" />
+            <Tab value="policies" label="角色策略" />
+          </TabList>
+        </PageTabsRow>
       }
     >
       {tab === 'users' ? (
         <div className="ff-access-stack">
-          <div className="ff-access-panel">
-            <div className="ff-access-panel-fields">
+          <PageToolbar
+            filters={
               <TextInput
                 label="搜索用户"
+                isLabelHidden
                 placeholder="按昵称搜索"
                 value={q}
                 onChange={setQ}
                 hasClear
               />
-            </div>
-          </div>
+            }
+            actions={
+              <Button
+                label="新增用户"
+                variant="primary"
+                size="sm"
+                onClick={() => setDrawerOpen(true)}
+              />
+            }
+          />
           <div className="ff-table-wrap">
             <DataTable
               {...TABLE_PROPS}
@@ -310,10 +346,9 @@ export function UsersPage() {
                     header: '状态',
                     width: pixel(88),
                     render: (u) => (
-                      <Badge
-                        label={u.ext?.disabled ? '禁用' : '正常'}
-                        variant={u.ext?.disabled ? 'warning' : 'success'}
-                      />
+                      <ToneBadge tone={u.ext?.disabled ? 'warn' : 'ok'}>
+                        {u.ext?.disabled ? '禁用' : '正常'}
+                      </ToneBadge>
                     ),
                   },
                   {
@@ -354,21 +389,35 @@ export function UsersPage() {
 
       {tab === 'roles' ? (
         <div className="ff-access-stack">
-          <div className="ff-access-panel">
-            <div className="ff-access-panel-fields">
-              <TextInput
-                label="角色名称"
-                value={roleForm.title}
-                onChange={(v) => setRoleForm((f) => ({ ...f, title: v }))}
+          <PageToolbar
+            filters={
+              <>
+                <TextInput
+                  label="角色名称"
+                  isLabelHidden
+                  placeholder="角色名称，如 审计员"
+                  value={roleForm.title}
+                  onChange={(v) => setRoleForm((f) => ({ ...f, title: v }))}
+                />
+                <TextInput
+                  label="角色值"
+                  isLabelHidden
+                  placeholder="角色值，如 auditor"
+                  value={roleForm.value}
+                  onChange={(v) => setRoleForm((f) => ({ ...f, value: v }))}
+                />
+              </>
+            }
+            actions={
+              <Button
+                label="添加角色"
+                variant="primary"
+                size="sm"
+                isLoading={addRoleMutation.isPending}
+                clickAction={submitAddRole}
               />
-              <TextInput
-                label="角色值"
-                placeholder="如 auditor"
-                value={roleForm.value}
-                onChange={(v) => setRoleForm((f) => ({ ...f, value: v }))}
-              />
-            </div>
-          </div>
+            }
+          />
           <div className="ff-table-wrap">
             <DataTable
               {...TABLE_PROPS}
@@ -421,19 +470,22 @@ export function UsersPage() {
 
       {tab === 'policies' ? (
         <div className="ff-access-stack">
-          <div className="ff-access-panel">
-            <div className="ff-access-panel-fields">
-              <Selector
-                label="编辑角色"
-                value={policyRole}
-                onChange={(v) => setPolicyRole(v || 'operator')}
-                options={roleOptions}
-              />
-            </div>
-            <p className="ff-access-hint">
-              开启后该角色登录可见对应侧栏（策略 act=GET）
-            </p>
-          </div>
+          <PageToolbar
+            filters={
+              <>
+                <Selector
+                  label="编辑角色"
+                  isLabelHidden
+                  value={policyRole}
+                  onChange={(v) => setPolicyRole(v || 'operator')}
+                  options={roleOptions}
+                />
+                <span className="ff-toolbar-hint">
+                  开启后该角色登录可见对应侧栏（策略 act=GET）
+                </span>
+              </>
+            }
+          />
           <div className="ff-table-wrap">
             <DataTable
               {...TABLE_PROPS}
@@ -463,10 +515,9 @@ export function UsersPage() {
                     render: (m) => {
                       const on = grantedMenus.has(m.value)
                       return (
-                        <Badge
-                          label={on ? '已授权' : '未授权'}
-                          variant={on ? 'success' : 'neutral'}
-                        />
+                        <ToneBadge tone={on ? 'ok' : 'off'}>
+                          {on ? '已授权' : '未授权'}
+                        </ToneBadge>
                       )
                     },
                   },
@@ -592,7 +643,7 @@ export function UsersPage() {
           ) : (
             (userRolesQuery.data ?? []).map((r) => (
               <HStack key={r.roleValue} justify="between" vAlign="center">
-                <Badge label={r.roleTitle || r.roleValue} variant="neutral" />
+                <ToneBadge tone="info">{r.roleTitle || r.roleValue}</ToneBadge>
                 {r.roleValue !== 'root' ? (
                   <Button
                     label="移除"

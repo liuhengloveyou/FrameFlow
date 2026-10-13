@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@astryxdesign/core/Button'
-import { Badge } from '@astryxdesign/core/Badge'
 import { NumberInput } from '@astryxdesign/core/NumberInput'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
@@ -13,6 +12,7 @@ import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { useToast } from '@astryxdesign/core/Toast'
 import { PageLayout } from '@/components/page-layout'
+import { ToneBadge, type Tone } from '@/components/tone-badge'
 import { CameraStatusBadge } from '@/components/status-badge'
 import { getCamera } from '@/apis/devices-api'
 import {
@@ -40,13 +40,11 @@ const statusLabel: Record<AlgorithmRunStatus, string> = {
   error: '异常',
 }
 
-function statusVariant(
-  s: AlgorithmRunStatus,
-): 'neutral' | 'success' | 'warning' | 'error' {
-  if (s === 'running') return 'success'
-  if (s === 'error') return 'error'
-  if (s === 'stopped') return 'warning'
-  return 'neutral'
+function statusTone(s: AlgorithmRunStatus): Tone {
+  if (s === 'running') return 'ok'
+  if (s === 'error') return 'danger'
+  if (s === 'stopped') return 'off'
+  return 'info'
 }
 
 function asPointRegions(raw: unknown): Point2D[][] {
@@ -370,7 +368,7 @@ export function DeviceAiPage({
   return (
     <PageLayout
       title={camera ? `视频 AI · ${camera.name}` : '视频 AI 配置'}
-      description={`${streamLabel} · 可绑多个算法 · 整帧或画区域 → 启动`}
+      badge={streamLabel.length <= 12 ? `通道 ${streamLabel}` : undefined}
       actions={
         camera ? (
           <div className="ff-ai-stream-meta">
@@ -512,12 +510,11 @@ export function DeviceAiPage({
                       }}
                     >
                       <span className="ff-ai-algo-fold-title">{algo.name}</span>
-                      <Badge
-                        label={statusLabel[algo.status]}
-                        variant={statusVariant(algo.status)}
-                      />
+                      <ToneBadge tone={statusTone(algo.status)}>
+                        {statusLabel[algo.status]}
+                      </ToneBadge>
                       {open && dirty ? (
-                        <Badge label="未保存" variant="warning" />
+                        <ToneBadge tone="warn">未保存</ToneBadge>
                       ) : null}
                       <span className="ff-ai-algo-fold-chevron" aria-hidden>
                         {open ? '▾' : '▸'}

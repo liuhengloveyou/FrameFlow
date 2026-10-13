@@ -507,7 +507,12 @@ export function MonitorDetail({
                   : '无流地址'}
               </div>
             )}
-            <DetectionOverlay boxes={visionBoxes} visible={aiLive} />
+            <DetectionOverlay
+              boxes={visionBoxes}
+              visible={aiLive}
+              videoW={stats?.width ?? 0}
+              videoH={stats?.height ?? 0}
+            />
             {aiLive && !visionBoxes.length && visionHint ? (
               <div className="ff-monitor-detail-ai-hint">{visionHint}</div>
             ) : null}

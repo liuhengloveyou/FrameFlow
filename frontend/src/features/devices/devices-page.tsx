@@ -5,8 +5,9 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Badge } from '@astryxdesign/core/Badge'
 import { Button } from '@astryxdesign/core/Button'
+import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog'
+import { Layout } from '@astryxdesign/core/Layout'
 import { TextInput } from '@astryxdesign/core/TextInput'
 import { Selector } from '@astryxdesign/core/Selector'
 import { RadioList, RadioListItem } from '@astryxdesign/core/RadioList'
@@ -16,10 +17,20 @@ import { VStack } from '@astryxdesign/core/VStack'
 import { Text } from '@astryxdesign/core/Text'
 import { Icon } from '@astryxdesign/core/Icon'
 import { useToast } from '@astryxdesign/core/Toast'
-import { VideoCameraIcon, ChevronRightIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
+import {
+  ExclamationTriangleIcon,
+  RectangleStackIcon,
+  SignalIcon,
+  VideoCameraIcon,
+  ChevronRightIcon,
+  ChevronDownIcon,
+} from '@heroicons/react/24/outline'
 import { PageLayout } from '@/components/page-layout'
+import { PageToolbar } from '@/components/page-toolbar'
+import { InlineStat, InlineStatGroup } from '@/components/inline-stat'
 import { SidePanel } from '@/components/side-panel'
 import { PaginationBar } from '@/components/pagination-bar'
+import { ToneBadge } from '@/components/tone-badge'
 import { DataTable, proportional, pixel, type DataTableColumn } from '@/components/data-table'
 import { CameraStatusBadge } from '@/components/status-badge'
 import { seedPreviewSource } from '@/lib/preview-seed'
@@ -115,6 +126,20 @@ function formatKeepaliveSecond(iso?: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** 分辨率紧凑写法：1920x1080 → 1080p，列表里更省横向空间 */
+function shortResolution(res?: string | null): string {
+  if (!res?.trim()) return ''
+  const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec(res.trim())
+  if (!m) return res.trim()
+  const h = Number(m[2])
+  if (h >= 2160) return '4K'
+  if (h >= 1440) return '1440p'
+  if (h >= 1080) return '1080p'
+  if (h >= 720) return '720p'
+  if (h >= 480) return '480p'
+  return `${m[1]}×${m[2]}`
+}
+
 export function DevicesPage() {
   const toast = useToast()
   const navigate = useNavigate()
@@ -122,11 +147,13 @@ export function DevicesPage() {
   const [name, setName] = useState('')
   const [status, setStatus] = useState('')
   const [group, setGroup] = useState('')
-  const [protocolFilter, setProtocolFilter] = useState('')
+  /** 协议筛选：保留在查询参数中，工具条默认不放（设计稿从简） */
+  const [protocolFilter] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<Camera | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
   const [form, setForm] = useState<CameraInput>(emptyForm)
   const [createdPushInfo, setCreatedPushInfo] = useState<{
     publishUrl?: string
@@ -228,6 +255,31 @@ export function DevicesPage() {
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  /** 顶部统计：在线 / 离线台数（轻量计数查询，只取 total） */
+  const onlineCountQuery = useQuery({
+    queryKey: ['cameras', { countByStatus: 'online' }],
+    queryFn: () => listCameras({ status: 'online', pageSize: 1 }),
+    staleTime: 30_000,
+  })
+  const offlineCountQuery = useQuery({
+    queryKey: ['cameras', { countByStatus: 'offline' }],
+    queryFn: () => listCameras({ status: 'offline', pageSize: 1 }),
+    staleTime: 30_000,
+  })
+  const onlineCount = onlineCountQuery.data?.total ?? 0
+  const offlineCount = offlineCountQuery.data?.total ?? 0
+
+  /** 全量口径（不受筛选影响）：设备总数 + 接入通道数 */
+  const totalAll = allForGroups.data?.total ?? total
+  const channelCount = useMemo(
+    () =>
+      (allForGroups.data?.items ?? []).reduce(
+        (n, c) => n + Math.max(c.channelCount ?? c.channels?.length ?? 0, 1),
+        0,
+      ),
+    [allForGroups.data?.items],
+  )
 
   const tableRows = useMemo(() => {
     const rows: DeviceTableRow[] = []
@@ -601,74 +653,96 @@ export function DevicesPage() {
   return (
     <PageLayout
       title="设备管理"
-      description="多协议接入、筛选、启停与 AI 配置入口"
-      actions={
-        <HStack gap={2} vAlign="center">
-          <Text type="supporting" color="secondary">
-            共 {total} 台
-          </Text>
-          <Button
-            label="刷新"
-            variant="secondary"
-            size="sm"
-            isLoading={query.isFetching}
-            clickAction={async () => {
-              await query.refetch()
-            }}
-          />
-          <Button label="添加设备" variant="primary" size="sm" onClick={openCreate} />
-        </HStack>
-      }
+      badge={`在线 ${onlineCount} / ${totalAll || 0}`}
+      contentPadding={3}
       toolbar={
-        <div className="ff-toolbar">
-          <TextInput
-            label="名称"
-            isLabelHidden
-            placeholder="按名称搜索"
-            value={name}
-            onChange={setName}
-            hasClear
-          />
-          <Selector
-            label="协议"
-            isLabelHidden
-            placeholder="全部协议"
-            hasClear
-            value={protocolFilter}
-            onChange={(v) => setProtocolFilter(v ?? '')}
-            options={CAMERA_PROTOCOL_OPTIONS}
-          />
-          <Selector
-            label="状态"
-            isLabelHidden
-            placeholder="全部状态"
-            hasClear
-            value={status}
-            onChange={(v) => setStatus(v ?? '')}
-            options={[
-              { label: '在线', value: 'online' },
-              { label: '离线', value: 'offline' },
-              { label: '运行中', value: 'running' },
-              { label: '已停止', value: 'stopped' },
-              { label: '异常', value: 'error' },
-            ]}
-          />
-          <Selector
-            label="分组"
-            isLabelHidden
-            placeholder="全部分组"
-            hasClear
-            value={group}
-            onChange={(v) => setGroup(v ?? '')}
-            options={groups.map((g) => ({ label: g, value: g }))}
-          />
-        </div>
+        <PageToolbar
+          filters={
+            <>
+              <TextInput
+                label="名称"
+                isLabelHidden
+                placeholder="搜索设备名称 / IP / 序列号"
+                value={name}
+                onChange={setName}
+                hasClear
+              />
+              <Selector
+                label="状态"
+                isLabelHidden
+                placeholder="状态：全部"
+                hasClear
+                value={status}
+                onChange={(v) => setStatus(v ?? '')}
+                options={[
+                  { label: '在线', value: 'online' },
+                  { label: '离线', value: 'offline' },
+                  { label: '运行中', value: 'running' },
+                  { label: '已停止', value: 'stopped' },
+                  { label: '异常', value: 'error' },
+                ]}
+              />
+              <Selector
+                label="分组"
+                isLabelHidden
+                placeholder="分组：全部分组"
+                hasClear
+                value={group}
+                onChange={(v) => setGroup(v ?? '')}
+                options={groups.map((g) => ({ label: g, value: g }))}
+              />
+            </>
+          }
+          actions={
+            <>
+              <Button
+                label="批量导入"
+                size="sm"
+                variant="secondary"
+                onClick={() => setImportOpen(true)}
+              />
+              <Button
+                label="添加设备"
+                size="sm"
+                variant="primary"
+                onClick={openCreate}
+              />
+            </>
+          }
+          stats={
+            <InlineStatGroup>
+              <InlineStat
+                icon={<VideoCameraIcon />}
+                value={totalAll}
+                label="设备总数"
+              />
+              <InlineStat
+                icon={<SignalIcon />}
+                value={onlineCount}
+                label="在线"
+                tone="ok"
+              />
+              <InlineStat
+                icon={<ExclamationTriangleIcon />}
+                value={offlineCount}
+                label="离线"
+                tone="warn"
+              />
+              <InlineStat
+                icon={<RectangleStackIcon />}
+                value={channelCount}
+                label="接入通道"
+                tone="teal"
+              />
+            </InlineStatGroup>
+          }
+        />
       }
     >
       {pendingGb.length > 0 ? (
         <VStack gap={3} className="ff-gb-pending">
           <HStack gap={2} vAlign="center">
-            <Badge label={`待确认 ${pendingGb.length}`} variant="error" />
+            <ToneBadge tone="danger">{`待确认 ${pendingGb.length}`}</ToneBadge>
             <Text type="supporting" color="secondary">
               国标设备主动注册，确认后才允许拉流；拒绝后将禁止再次注册。
             </Text>
@@ -714,10 +788,9 @@ export function DevicesPage() {
                   header: '在线',
                   width: pixel(88),
                   render: (d) => (
-                    <Badge
-                      label={d.online ? '在线' : '离线'}
-                      variant={d.online ? 'success' : 'neutral'}
-                    />
+                    <ToneBadge tone={d.online ? 'ok' : 'off'}>
+                      {d.online ? '在线' : '离线'}
+                    </ToneBadge>
                   ),
                 },
                 {
@@ -757,6 +830,15 @@ export function DevicesPage() {
           </div>
         </VStack>
       ) : null}
+      <div className="ff-devices-stats">
+        <span>
+          共 <strong>{total}</strong> 台设备
+        </span>
+        <span className="ff-devices-stats-dot" data-tone="ok" />
+        <span>在线 {onlineCount}</span>
+        <span className="ff-devices-stats-dot" data-tone="off" />
+        <span>离线 {offlineCount}</span>
+      </div>
       <div className="ff-table-wrap">
         <DataTable
           data={tableRows}
@@ -855,12 +937,9 @@ export function DevicesPage() {
                     const st = row.channel?.status?.toUpperCase()
                     if (!row.channel) return null
                     return (
-                      <Badge
-                        label={st === 'ON' || st === 'ONLINE' ? '在线' : st || '—'}
-                        variant={
-                          st === 'ON' || st === 'ONLINE' ? 'success' : 'neutral'
-                        }
-                      />
+                      <ToneBadge tone={st === 'ON' || st === 'ONLINE' ? 'ok' : 'off'}>
+                        {st === 'ON' || st === 'ONLINE' ? '在线' : st || '—'}
+                      </ToneBadge>
                     )
                   }
                   return <CameraStatusBadge status={row.camera.status} />
@@ -881,22 +960,32 @@ export function DevicesPage() {
               },
               {
                 key: 'protocol',
-                header: '协议',
-                width: pixel(100),
+                header: '协议 / 厂商',
+                width: pixel(150),
                 render: (row) => {
                   if (row.kind === 'channel') {
                     return (
-                      <Text type="supporting" color="secondary">
+                      <Text type="supporting" color="secondary" maxLines={1}>
                         通道
+                        {row.channel?.manufacturer?.trim()
+                          ? ` · ${row.channel.manufacturer.trim()}`
+                          : ''}
                       </Text>
                     )
                   }
                   const c = row.camera
+                  const vendor = c.vendor?.trim()
                   return (
-                    <Badge
-                      label={CAMERA_PROTOCOL_LABEL[c.protocol] ?? c.protocol}
-                      variant={c.protocol === 'gb28181' ? 'teal' : 'neutral'}
-                    />
+                    <HStack gap={2} vAlign="center" wrap="nowrap">
+                      <ToneBadge tone={c.protocol === 'gb28181' ? 'teal' : 'off'}>
+                        {CAMERA_PROTOCOL_LABEL[c.protocol] ?? c.protocol}
+                      </ToneBadge>
+                      {vendor ? (
+                        <Text type="supporting" color="secondary" maxLines={1}>
+                          {vendor}
+                        </Text>
+                      ) : null}
+                    </HStack>
                   )
                 },
               },
@@ -971,7 +1060,7 @@ export function DevicesPage() {
                   if (row.kind === 'channel') return null
                   const g = row.camera.group?.trim()
                   return g ? (
-                    <Badge label={g} variant="neutral" />
+                    <ToneBadge tone="off">{g}</ToneBadge>
                   ) : (
                     <Text type="supporting" color="secondary">
                       —
@@ -982,13 +1071,13 @@ export function DevicesPage() {
               {
                 key: 'media',
                 header: '画面',
-                width: pixel(120),
+                width: pixel(112),
                 render: (row) => {
                   if (row.kind === 'channel') return null
                   const c = row.camera
                   return (
-                    <Text type="supporting" color="secondary">
-                      {[c.resolution, c.fps ? `${c.fps} fps` : '']
+                    <Text type="supporting" color="secondary" maxLines={1}>
+                      {[shortResolution(c.resolution), c.fps ? `${c.fps}fps` : '']
                         .filter(Boolean)
                         .join(' · ') || '—'}
                     </Text>
@@ -996,28 +1085,9 @@ export function DevicesPage() {
                 },
               },
               {
-                key: 'vendor',
-                header: '厂商',
-                width: pixel(96),
-                render: (row) => {
-                  if (row.kind === 'channel') {
-                    return (
-                      <Text type="supporting" color="secondary" maxLines={1}>
-                        {row.channel?.manufacturer?.trim() || '—'}
-                      </Text>
-                    )
-                  }
-                  return (
-                    <Text type="supporting" color="secondary" maxLines={1}>
-                      {row.camera.vendor?.trim() || '—'}
-                    </Text>
-                  )
-                },
-              },
-              {
                 key: 'actions',
                 header: '操作',
-                width: pixel(200),
+                width: pixel(232),
                 render: (row) => {
                   if (row.kind === 'channel') {
                     if (!row.channel) {
@@ -1650,6 +1720,158 @@ export function DevicesPage() {
           onClose={() => setMonitorDetail(null)}
         />
       ) : null}
+
+      <DeviceImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={async () => {
+          await Promise.all([
+            query.refetch(),
+            allForGroups.refetch(),
+            onlineCountQuery.refetch(),
+            offlineCountQuery.refetch(),
+          ])
+        }}
+      />
     </PageLayout>
+  )
+}
+
+/** 批量导入：每行一个 RTSP 地址（可带 `名称 | 地址`），逐条创建并汇总结果 */
+function DeviceImportDialog({
+  open,
+  onOpenChange,
+  onImported,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onImported: () => void | Promise<void>
+}) {
+  const toast = useToast()
+  const [text, setText] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [result, setResult] = useState<{
+    ok: number
+    failed: Array<{ line: string; reason: string }>
+  } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setText('')
+    setResult(null)
+  }, [open])
+
+  async function runImport() {
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (!lines.length) {
+      toast({ body: '请先粘贴至少一行 RTSP 地址', type: 'error' })
+      return
+    }
+    setImporting(true)
+    const failed: Array<{ line: string; reason: string }> = []
+    let ok = 0
+    for (const line of lines) {
+      const sep = line.indexOf('|')
+      const name = sep > 0 ? line.slice(0, sep).trim() : ''
+      const url = (sep > 0 ? line.slice(sep + 1) : line).trim()
+      let parsed: URL
+      try {
+        parsed = new URL(url)
+        if (parsed.protocol !== 'rtsp:') throw new Error('仅支持 rtsp:// 地址')
+      } catch {
+        failed.push({ line, reason: '不是合法的 rtsp:// 地址' })
+        continue
+      }
+      try {
+        await createCamera({
+          ...emptyForm,
+          name: name || parsed.hostname,
+          ip: parsed.hostname,
+          port: parsed.port ? Number(parsed.port) : 554,
+          path: parsed.pathname.replace(/^\//, '') || 'stream1',
+          username: decodeURIComponent(parsed.username || ''),
+          password: decodeURIComponent(parsed.password || ''),
+          protocol: 'rtsp',
+        })
+        ok += 1
+      } catch (err) {
+        failed.push({ line, reason: getErrorMessage(err) })
+      }
+    }
+    setImporting(false)
+    setResult({ ok, failed })
+    if (ok > 0) {
+      toast({ body: `成功导入 ${ok} 台设备`, type: 'info' })
+      await onImported()
+    }
+  }
+
+  return (
+    <Dialog
+      isOpen={open}
+      onOpenChange={onOpenChange}
+      purpose="form"
+      width={520}
+      padding={0}
+    >
+      <Layout
+        height="auto"
+        padding={4}
+        header={<DialogHeader title="批量导入设备" onOpenChange={onOpenChange} />}
+        content={
+          <div className="ff-dialog-body">
+            <VStack gap={3}>
+              <Text type="supporting" color="secondary">
+                每行一个设备，格式为「名称 | rtsp地址」或直接写 rtsp 地址（名称默认取
+                IP）。当前仅支持 RTSP 协议。
+              </Text>
+              <textarea
+                className="ff-import-textarea"
+                rows={7}
+                spellCheck={false}
+                placeholder={'装卸月台 | rtsp://admin:123456@192.168.1.102:554/stream1\nrtsp://192.168.1.121:554/stream1'}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+              {result ? (
+                <VStack gap={1}>
+                  <Text type="supporting">
+                    导入完成：成功 <strong>{result.ok}</strong> 条，失败{' '}
+                    <strong>{result.failed.length}</strong> 条
+                  </Text>
+                  {result.failed.slice(0, 5).map((f) => (
+                    <Text key={f.line} type="supporting" color="secondary">
+                      · {f.line} —— {f.reason}
+                    </Text>
+                  ))}
+                </VStack>
+              ) : null}
+            </VStack>
+          </div>
+        }
+        footer={
+          <div className="ff-dialog-footer">
+            <HStack gap={2} justify="end">
+              <Button
+                label="取消"
+                variant="secondary"
+                size="sm"
+                onClick={() => onOpenChange(false)}
+              />
+              <Button
+                label={importing ? '导入中…' : '开始导入'}
+                variant="primary"
+                size="sm"
+                isLoading={importing}
+                clickAction={runImport}
+              />
+            </HStack>
+          </div>
+        }
+      />
+    </Dialog>
   )
 }
